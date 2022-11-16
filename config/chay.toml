@@ -1,0 +1,7 @@
+
+
+[programs.print_foo]
+command = "/bin/bash -c 'while true; do echo \"foo\"; sleep 1; done"
+
+[programs.print_bar]
+command = "/bin/bash -c 'while true; do echo \"foo\"; sleep 1; done"
