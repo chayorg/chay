@@ -1,7 +1,10 @@
 
 
 [programs.print_foo]
-command = "/bin/bash -c 'while true; do echo \"foo\"; sleep 1; done"
+command = "/bin/bash"
+args = ["-c", "while true; do echo 'foo'; sleep 1; done"]
+autostart = false
 
 [programs.print_bar]
-command = "/bin/bash -c 'while true; do echo \"foo\"; sleep 1; done"
+command = "/bin/bash"
+args = ["-c", "while true; do echo 'bar'; sleep 1; done"]
