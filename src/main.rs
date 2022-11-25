@@ -28,6 +28,8 @@ struct Program {
     name: String,
     config: ProgramConfig,
     child_proc: Option<std::process::Child>,
+    should_stop: bool,
+    stopped: bool,
 }
 
 impl Program {
@@ -36,6 +38,8 @@ impl Program {
             name,
             config,
             child_proc: None,
+            should_stop: false,
+            stopped: true,
         }
     }
 }
@@ -46,8 +50,26 @@ fn read_config(config_path: &std::path::PathBuf) -> std::io::Result<Config> {
 }
 
 fn update_program_state(program: &mut Program) {
-    if let Some(_) = &program.child_proc {
-        println!("{}\tRunning", &program.name);
+    if let Some(child_proc) = &mut program.child_proc {
+        match child_proc.try_wait() {
+            Ok(Some(status)) => {
+                if program.should_stop {
+                    println!("{}\tStopped ({status})", &program.name);
+                } else {
+                    println!("{}\tExited ({status})", &program.name);
+                }
+            }
+            Ok(None) => {
+                if program.should_stop {
+                    println!("{}\tStopping", &program.name);
+                } else {
+                    println!("{}\tRunning", &program.name);
+                }
+            }
+            Err(e) => {
+                println!("Starting ({e})");
+            }
+        }
     } else {
         let mut command = std::process::Command::new(&program.config.command);
         if let Some(args) = &program.config.args {
@@ -59,9 +81,10 @@ fn update_program_state(program: &mut Program) {
         match command.spawn() {
             Ok(child_proc) => {
                 program.child_proc.replace(child_proc);
+                println!("Starting");
             }
             Err(error) => {
-                println!("{}\tSpawn Error ({})", &program.name, error);
+                println!("{}\tExited (Spawn Error: {})", &program.name, error);
             }
         }
     }
