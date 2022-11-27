@@ -1,8 +1,6 @@
 [programs.print_foo]
 command = "/bin/bash"
-#args = ["-c", "while true; do echo 'foo'; sleep 1; done"]
-args = ["-c", "sleep 2; exit 1;"]
-autostart = false
+args = ["-c", "echo 'foo'; sleep 2; exit 1;"]
 
 [programs.print_bar]
 command = "/bin/bash"

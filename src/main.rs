@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use toml;
 
 /// Daemon to supervise a list of processes
@@ -28,8 +28,6 @@ struct Program {
     name: String,
     config: ProgramConfig,
     child_proc: Option<std::process::Child>,
-    should_stop: bool,
-    stopped: bool,
 }
 
 impl Program {
@@ -38,8 +36,20 @@ impl Program {
             name,
             config,
             child_proc: None,
-            should_stop: false,
-            stopped: true,
+        }
+    }
+
+    fn start(&mut self) -> std::io::Result<()> {
+        let mut command = std::process::Command::new(&self.config.command);
+        if let Some(args) = &self.config.args {
+            command.args(args);
+        }
+        match command.spawn() {
+            Ok(child_proc) => {
+                self.child_proc.replace(child_proc);
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     }
 }
@@ -49,44 +59,187 @@ fn read_config(config_path: &std::path::PathBuf) -> std::io::Result<Config> {
     Ok(toml::from_str(&content)?)
 }
 
-fn update_program_state(program: &mut Program) {
-    if let Some(child_proc) = &mut program.child_proc {
-        match child_proc.try_wait() {
-            Ok(Some(status)) => {
-                if program.should_stop {
-                    println!("{}\tStopped ({status})", &program.name);
-                } else {
-                    println!("{}\tExited ({status})", &program.name);
-                }
-            }
-            Ok(None) => {
-                if program.should_stop {
-                    println!("{}\tStopping", &program.name);
-                } else {
-                    println!("{}\tRunning", &program.name);
-                }
-            }
-            Err(e) => {
-                println!("Starting ({e})");
-            }
+trait State<StateKey, AppContext> {
+    fn update(&mut self, context: &mut dyn Context<StateKey>, app_context: &mut AppContext);
+    fn enter(&mut self, _app_context: &mut AppContext) {}
+    fn exit(&mut self, _app_context: &mut AppContext) {}
+}
+
+trait Context<StateKey> {
+    fn transition(&mut self, state_key: StateKey);
+}
+
+struct ContextImpl<StateKey> {
+    current_state_key: StateKey,
+}
+
+impl<StateKey> ContextImpl<StateKey> {
+    fn new(init_state_key: StateKey) -> Self {
+        ContextImpl::<StateKey> {
+            current_state_key: init_state_key,
         }
+    }
+}
+
+impl<StateKey> Context<StateKey> for ContextImpl<StateKey> {
+    fn transition(&mut self, state_key: StateKey) {
+        self.current_state_key = state_key;
+    }
+}
+
+struct Machine<StateKey, AppContext> {
+    app_context: AppContext,
+    states: HashMap<StateKey, Box<dyn State<StateKey, AppContext>>>,
+    context: ContextImpl<StateKey>,
+    first_update: bool,
+}
+
+impl<StateKey, AppContext> Machine<StateKey, AppContext>
+where
+    StateKey: Clone + Eq + std::hash::Hash,
+{
+    fn new(
+        app_context: AppContext,
+        init_state: StateKey,
+        states: HashMap<StateKey, Box<dyn State<StateKey, AppContext>>>,
+    ) -> Self {
+        return Machine::<StateKey, AppContext> {
+            app_context,
+            states,
+            context: ContextImpl::<StateKey>::new(init_state),
+            first_update: true,
+        };
+    }
+
+    fn current_state_key(&self) -> StateKey {
+        return self.context.current_state_key.clone();
+    }
+
+    fn update(&mut self) {
+        let state_key = self.current_state_key();
+        {
+            let state = self.states.get_mut(&state_key).unwrap();
+            if self.first_update {
+                self.first_update = false;
+                // Ensure we call the enter method for the initial state before doing anything.
+                state.enter(&mut self.app_context);
+            }
+            state.update(&mut self.context, &mut self.app_context);
+        }
+        let new_state_key = self.current_state_key();
+        if new_state_key != state_key {
+            {
+                let old_state = self.states.get_mut(&state_key).unwrap();
+                old_state.exit(&mut self.app_context);
+            }
+            let new_state = self.states.get_mut(&new_state_key).unwrap();
+            new_state.enter(&mut self.app_context);
+        }
+    }
+}
+
+fn new_fsm(program_name: String, config: ProgramConfig) -> Machine<ProgramState, Program> {
+    let program = Program::new(program_name, config.clone());
+    let init_state = if config.autostart.unwrap_or(true) {
+        ProgramState::Starting
     } else {
-        let mut command = std::process::Command::new(&program.config.command);
-        if let Some(args) = &program.config.args {
-            for arg in args {
-                println!("arg: {}", arg);
+        ProgramState::Stopped
+    };
+    let stopped: Box<dyn State<ProgramState, Program>> = Box::new(Stopped::default());
+    let exited: Box<dyn State<ProgramState, Program>> = Box::new(Exited::default());
+    let starting: Box<dyn State<ProgramState, Program>> = Box::new(Starting::default());
+    let running: Box<dyn State<ProgramState, Program>> = Box::new(Running::default());
+    return Machine::<ProgramState, Program>::new(
+        program,
+        init_state,
+        HashMap::from([
+            (ProgramState::Stopped, stopped),
+            (ProgramState::Exited, exited),
+            (ProgramState::Starting, starting),
+            (ProgramState::Running, running),
+        ]),
+    );
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+enum ProgramState {
+    Stopped,
+    Exited,
+    Starting,
+    Running,
+}
+
+#[derive(Default)]
+struct Stopped {}
+#[derive(Default)]
+struct Exited {}
+#[derive(Default)]
+struct Starting {}
+#[derive(Default)]
+struct Running {}
+
+impl State<ProgramState, Program> for Stopped {
+    fn update(&mut self, _context: &mut dyn Context<ProgramState>, _program: &mut Program) {}
+
+    fn enter(&mut self, program: &mut Program) {
+        println!("{} stopped", program.name);
+    }
+}
+
+impl State<ProgramState, Program> for Exited {
+    fn update(&mut self, _context: &mut dyn Context<ProgramState>, _program: &mut Program) {}
+
+    fn enter(&mut self, program: &mut Program) {
+        println!("{} exited", program.name);
+    }
+}
+
+impl State<ProgramState, Program> for Starting {
+    fn update(&mut self, context: &mut dyn Context<ProgramState>, program: &mut Program) {
+        if let Some(child_proc) = &mut program.child_proc {
+            match child_proc.try_wait() {
+                Ok(Some(_)) => {
+                    context.transition(ProgramState::Exited);
+                }
+                Ok(None) => {
+                    context.transition(ProgramState::Running);
+                }
+                Err(_) => {
+                    context.transition(ProgramState::Exited);
+                }
             }
-            command.args(args);
+        } else {
+            context.transition(ProgramState::Exited);
         }
-        match command.spawn() {
-            Ok(child_proc) => {
-                program.child_proc.replace(child_proc);
-                println!("Starting");
-            }
-            Err(error) => {
-                println!("{}\tExited (Spawn Error: {})", &program.name, error);
+    }
+
+    fn enter(&mut self, program: &mut Program) {
+        println!("{} starting", program.name);
+        if let Err(error) = program.start() {
+            println!("{} spawn error: {error}", program.name);
+        }
+    }
+}
+
+impl State<ProgramState, Program> for Running {
+    fn update(&mut self, context: &mut dyn Context<ProgramState>, program: &mut Program) {
+        if let Some(child_proc) = &mut program.child_proc {
+            match child_proc.try_wait() {
+                Ok(Some(_)) => {
+                    context.transition(ProgramState::Exited);
+                }
+                Ok(None) => {
+                    // Running. Nothing to do.
+                }
+                Err(_) => {
+                    context.transition(ProgramState::Exited);
+                }
             }
         }
+    }
+
+    fn enter(&mut self, program: &mut Program) {
+        println!("{} running", program.name);
     }
 }
 
@@ -96,16 +249,14 @@ fn main() {
         println!("Error parsing toml file: {}", error);
         std::process::exit(1);
     });
-    let mut programs: Vec<Program> = config
+    let mut program_fsms: Vec<Machine<ProgramState, Program>> = config
         .programs
         .iter()
-        .map(|(name, config)| Program::new(name.clone(), config.clone()))
+        .map(|(name, config)| new_fsm(name.clone(), config.clone()))
         .collect();
-    println!("Programs: {:?}", programs);
     loop {
-        println!("------------------------------------");
-        for program in &mut programs {
-            update_program_state(program);
+        for program_fsm in &mut program_fsms {
+            program_fsm.update();
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
