@@ -209,6 +209,8 @@ impl State<ProgramState, Program> for Starting {
                 }
             }
         } else {
+            // This will happen when there was a spawn error trying to start the process in the
+            // enter callback.
             context.transition(ProgramState::Exited);
         }
     }
