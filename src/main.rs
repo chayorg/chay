@@ -237,6 +237,8 @@ impl State<ProgramState, Program> for Running {
                     context.transition(ProgramState::Exited);
                 }
             }
+        } else {
+            panic!("Child proc is none in Running state");
         }
     }
 
