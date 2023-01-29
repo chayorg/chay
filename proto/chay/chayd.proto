@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package chay;
+
+service Chayd { rpc get_health(ChaydHealthRequest) returns (ChaydHealthReply); }
+
+message ChaydHealthRequest {}
+
+message ChaydHealthReply {}

@@ -1,6 +1,14 @@
 use clap::Parser;
 use std::collections::{BTreeMap, HashMap};
 use toml;
+use tonic::{transport::Server, Request, Response, Status};
+
+use chay::chayd_server::{Chayd, ChaydServer};
+use chay::{ChaydHealthReply, ChaydHealthRequest};
+
+pub mod chay {
+    tonic::include_proto!("chay");
+}
 
 /// Daemon to supervise a list of processes
 #[derive(clap::Parser, Debug)]
@@ -247,21 +255,49 @@ impl State<ProgramState, Program> for Running {
     }
 }
 
-fn main() {
+#[derive(Debug, Default)]
+pub struct ChaydServerImpl {}
+
+#[tonic::async_trait]
+impl Chayd for ChaydServerImpl {
+    async fn get_health(
+        &self,
+        _request: Request<ChaydHealthRequest>,
+    ) -> Result<Response<ChaydHealthReply>, Status> {
+        println!("Received health request");
+        let reply = chay::ChaydHealthReply::default();
+        Ok(Response::new(reply))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = read_config(&args.config_path).unwrap_or_else(|error| {
         println!("Error parsing toml file: {}", error);
         std::process::exit(1);
     });
+
     let mut program_fsms: Vec<Machine<ProgramState, Program>> = config
         .programs
         .iter()
-        .map(|(name, config)| new_fsm(name.clone(), config.clone()))
+        .map(|(program_name, program_config)| new_fsm(program_name.clone(), program_config.clone()))
         .collect();
+
+    let chayd_addr = "[::1]:50051".parse()?;
+    let chayd_server = ChaydServerImpl::default();
+
+    tokio::spawn(
+        Server::builder()
+            .add_service(ChaydServer::new(chayd_server))
+            .serve(chayd_addr),
+    );
+
+    let mut fsm_update_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
     loop {
+        fsm_update_interval.tick().await;
         for program_fsm in &mut program_fsms {
             program_fsm.update();
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 }
