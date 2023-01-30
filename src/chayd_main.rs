@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use toml;
 use tonic::{transport::Server, Request, Response, Status};
 
-use chay::chayd_server::{Chayd, ChaydServer};
-use chay::{ChaydHealthReply, ChaydHealthRequest};
+use chay::chayd_service_server::{ChaydService, ChaydServiceServer};
+use chay::{ChaydServiceGetHealthRequest, ChaydServiceGetHealthResponse};
 
 pub mod chay {
     tonic::include_proto!("chay");
@@ -256,17 +256,17 @@ impl State<ProgramState, Program> for Running {
 }
 
 #[derive(Debug, Default)]
-pub struct ChaydServerImpl {}
+pub struct ChaydServiceServerImpl {}
 
 #[tonic::async_trait]
-impl Chayd for ChaydServerImpl {
+impl ChaydService for ChaydServiceServerImpl {
     async fn get_health(
         &self,
-        _request: Request<ChaydHealthRequest>,
-    ) -> Result<Response<ChaydHealthReply>, Status> {
-        println!("Received health request");
-        let reply = chay::ChaydHealthReply::default();
-        Ok(Response::new(reply))
+        _request: Request<ChaydServiceGetHealthRequest>,
+    ) -> Result<Response<ChaydServiceGetHealthResponse>, Status> {
+        println!("Received GetHealth request");
+        let response = ChaydServiceGetHealthResponse {};
+        Ok(Response::new(response))
     }
 }
 
@@ -285,11 +285,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let chayd_addr = "[::1]:50051".parse()?;
-    let chayd_server = ChaydServerImpl::default();
+    let chayd_server = ChaydServiceServerImpl::default();
 
     tokio::spawn(
         Server::builder()
-            .add_service(ChaydServer::new(chayd_server))
+            .add_service(ChaydServiceServer::new(chayd_server))
             .serve(chayd_addr),
     );
 

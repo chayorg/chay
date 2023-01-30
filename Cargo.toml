@@ -3,6 +3,14 @@ name = "chay"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "chayd"
+path = "src/chayd_main.rs"
+
+[[bin]]
+name = "chay"
+path = "src/chay_main.rs"
+
 [dependencies]
 clap = { version = "4.0.23", features = ["derive"] }
 prost = "0.11"
