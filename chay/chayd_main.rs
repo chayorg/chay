@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, HashMap};
 use toml;
 use tonic::{transport::Server, Request, Response, Status};
 
-use chay::chayd_service_server::{ChaydService, ChaydServiceServer};
-use chay::{ChaydServiceGetHealthRequest, ChaydServiceGetHealthResponse};
+use chay_proto::chayd_service_server::{ChaydService, ChaydServiceServer};
+use chay_proto::{ChaydServiceGetHealthRequest, ChaydServiceGetHealthResponse};
 
-pub mod chay {
-    tonic::include_proto!("chay");
+pub mod chay_proto {
+    tonic::include_proto!("chay.proto.v1");
 }
 
 /// Daemon to supervise a list of processes

@@ -1,8 +1,8 @@
-use chay::chayd_service_client::ChaydServiceClient;
-use chay::ChaydServiceGetHealthRequest;
+use chay_proto::chayd_service_client::ChaydServiceClient;
+use chay_proto::ChaydServiceGetHealthRequest;
 
-pub mod chay {
-    tonic::include_proto!("chay");
+pub mod chay_proto {
+    tonic::include_proto!("chay.proto.v1");
 }
 
 #[tokio::main]
