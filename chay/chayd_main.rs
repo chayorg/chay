@@ -23,6 +23,36 @@ struct ProgramConfig {
     command: String,
     args: Option<Vec<String>>,
     autostart: Option<bool>,
+    autorestart: Option<bool>,
+    /// Seconds to wait after a program exits unexpectedly before attempted to restart the program.
+    backoff_delay: Option<u32>,
+    num_restart_attempts: Option<u32>,
+}
+
+impl ProgramConfig {
+    pub fn command(&self) -> String {
+        self.command.clone()
+    }
+
+    pub fn args(&self) -> Option<Vec<String>> {
+        self.args.clone()
+    }
+
+    pub fn autostart(&self) -> bool {
+        self.autostart.unwrap_or(true)
+    }
+
+    pub fn autorestart(&self) -> bool {
+        self.autorestart.unwrap_or(true)
+    }
+
+    pub fn backoff_delay(&self) -> u32 {
+        self.backoff_delay.unwrap_or(1u32)
+    }
+
+    pub fn num_restart_attempts(&self) -> u32 {
+        self.num_restart_attempts.unwrap_or(4u32)
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -35,21 +65,23 @@ struct Config {
 struct Program {
     name: String,
     config: ProgramConfig,
+    num_restarts: u32,
     child_proc: Option<std::process::Child>,
 }
 
 impl Program {
-    fn new(name: String, config: ProgramConfig) -> Program {
+    pub fn new(name: String, config: ProgramConfig) -> Program {
         Program {
             name,
             config,
+            num_restarts: 0u32,
             child_proc: None,
         }
     }
 
-    fn start(&mut self) -> std::io::Result<()> {
-        let mut command = std::process::Command::new(&self.config.command);
-        if let Some(args) = &self.config.args {
+    pub fn start(&mut self) -> std::io::Result<()> {
+        let mut command = std::process::Command::new(&self.config.command());
+        if let Some(args) = &self.config.args() {
             command.args(args);
         }
         match command.spawn() {
@@ -59,6 +91,16 @@ impl Program {
             }
             Err(error) => Err(error),
         }
+    }
+
+    pub fn is_running(&mut self) -> bool {
+        if let Some(child_proc) = &mut self.child_proc {
+            return match child_proc.try_wait() {
+                Ok(None) => true,
+                Ok(Some(_)) | Err(_) => false,
+            };
+        }
+        false
     }
 }
 
@@ -148,13 +190,14 @@ where
 
 fn new_fsm(program_name: String, config: ProgramConfig) -> Machine<ProgramState, Program> {
     let program = Program::new(program_name, config.clone());
-    let init_state = if config.autostart.unwrap_or(true) {
+    let init_state = if config.autostart() {
         ProgramState::Starting
     } else {
         ProgramState::Stopped
     };
     let stopped: Box<dyn State<ProgramState, Program>> = Box::new(Stopped::default());
     let exited: Box<dyn State<ProgramState, Program>> = Box::new(Exited::default());
+    let backoff: Box<dyn State<ProgramState, Program>> = Box::new(Backoff::default());
     let starting: Box<dyn State<ProgramState, Program>> = Box::new(Starting::default());
     let running: Box<dyn State<ProgramState, Program>> = Box::new(Running::default());
     return Machine::<ProgramState, Program>::new(
@@ -163,26 +206,45 @@ fn new_fsm(program_name: String, config: ProgramConfig) -> Machine<ProgramState,
         HashMap::from([
             (ProgramState::Stopped, stopped),
             (ProgramState::Exited, exited),
+            (ProgramState::Backoff, backoff),
             (ProgramState::Starting, starting),
             (ProgramState::Running, running),
         ]),
     );
 }
 
+fn transition_to_backoff_or_exited(context: &mut dyn Context<ProgramState>, program: &mut Program) {
+    if program.config.autorestart() && program.num_restarts < program.config.num_restart_attempts()
+    {
+        context.transition(ProgramState::Backoff);
+    } else {
+        context.transition(ProgramState::Exited);
+    }
+}
+
 #[derive(Clone, Eq, Hash, PartialEq)]
 enum ProgramState {
     Stopped,
     Exited,
+    Backoff,
     Starting,
     Running,
 }
 
 #[derive(Default)]
 struct Stopped {}
+
 #[derive(Default)]
 struct Exited {}
+
+#[derive(Default)]
+struct Backoff {
+    enter_time: Option<std::time::Instant>,
+}
+
 #[derive(Default)]
 struct Starting {}
+
 #[derive(Default)]
 struct Running {}
 
@@ -190,6 +252,7 @@ impl State<ProgramState, Program> for Stopped {
     fn update(&mut self, _context: &mut dyn Context<ProgramState>, _program: &mut Program) {}
 
     fn enter(&mut self, program: &mut Program) {
+        program.num_restarts = 0u32;
         println!("{} stopped", program.name);
     }
 }
@@ -198,28 +261,38 @@ impl State<ProgramState, Program> for Exited {
     fn update(&mut self, _context: &mut dyn Context<ProgramState>, _program: &mut Program) {}
 
     fn enter(&mut self, program: &mut Program) {
+        program.num_restarts = 0u32;
         println!("{} exited", program.name);
+    }
+}
+
+impl State<ProgramState, Program> for Backoff {
+    fn update(&mut self, context: &mut dyn Context<ProgramState>, program: &mut Program) {
+        let now = std::time::Instant::now();
+        if (now - self.enter_time.unwrap())
+            >= std::time::Duration::from_secs(program.config.backoff_delay() as u64)
+        {
+            context.transition(ProgramState::Starting);
+        }
+    }
+
+    fn enter(&mut self, program: &mut Program) {
+        println!(
+            "{} backoff (delay: {})",
+            program.name,
+            program.config.backoff_delay()
+        );
+        program.num_restarts += 1u32;
+        self.enter_time.replace(std::time::Instant::now());
     }
 }
 
 impl State<ProgramState, Program> for Starting {
     fn update(&mut self, context: &mut dyn Context<ProgramState>, program: &mut Program) {
-        if let Some(child_proc) = &mut program.child_proc {
-            match child_proc.try_wait() {
-                Ok(Some(_)) => {
-                    context.transition(ProgramState::Exited);
-                }
-                Ok(None) => {
-                    context.transition(ProgramState::Running);
-                }
-                Err(_) => {
-                    context.transition(ProgramState::Exited);
-                }
-            }
+        if program.is_running() {
+            context.transition(ProgramState::Running);
         } else {
-            // This will happen when there was a spawn error trying to start the process in the
-            // enter callback.
-            context.transition(ProgramState::Exited);
+            transition_to_backoff_or_exited(context, program);
         }
     }
 
@@ -235,22 +308,20 @@ impl State<ProgramState, Program> for Running {
     fn update(&mut self, context: &mut dyn Context<ProgramState>, program: &mut Program) {
         if let Some(child_proc) = &mut program.child_proc {
             match child_proc.try_wait() {
-                Ok(Some(_)) => {
-                    context.transition(ProgramState::Exited);
-                }
                 Ok(None) => {
                     // Running. Nothing to do.
                 }
-                Err(_) => {
-                    context.transition(ProgramState::Exited);
+                Ok(Some(_)) | Err(_) => {
+                    transition_to_backoff_or_exited(context, program);
                 }
             }
         } else {
-            panic!("Child proc is none in Running state");
+            panic!("Child proc is None in Running state");
         }
     }
 
     fn enter(&mut self, program: &mut Program) {
+        program.num_restarts = 0u32;
         println!("{} running", program.name);
     }
 }

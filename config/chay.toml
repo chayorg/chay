@@ -5,3 +5,8 @@ args = ["-c", "echo 'foo'; sleep 2; exit 1;"]
 [programs.print_bar]
 command = "/bin/bash"
 args = ["-c", "while true; do echo 'bar'; sleep 1; done"]
+
+[programs.print_baz]
+command = "doesnotexist234"
+backoff_delay = 5  # seconds
+num_restart_attempts = 2
