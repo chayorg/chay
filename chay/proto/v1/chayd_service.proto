@@ -3,8 +3,7 @@ syntax = "proto3";
 package chay.proto.v1;
 
 service ChaydService {
-  rpc GetHealth(ChaydServiceGetHealthRequest)
-      returns (ChaydServiceGetHealthResponse);
+  rpc GetHealth(ChaydServiceGetHealthRequest) returns (ChaydServiceGetHealthResponse);
 }
 
 message ChaydServiceGetHealthRequest {}
