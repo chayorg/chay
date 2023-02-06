@@ -1,11 +1,20 @@
 syntax = "proto3";
 
+import "chay/proto/v1/program_status.proto";
+
 package chay.proto.v1;
 
 service ChaydService {
   rpc GetHealth(ChaydServiceGetHealthRequest) returns (ChaydServiceGetHealthResponse);
+  rpc GetStatus(ChaydServiceGetStatusRequest) returns (stream ChaydServiceGetStatusResponse);
 }
 
 message ChaydServiceGetHealthRequest {}
 
 message ChaydServiceGetHealthResponse {}
+
+message ChaydServiceGetStatusRequest {}
+
+message ChaydServiceGetStatusResponse {
+  repeated ProgramStatus program_statuses = 1;
+}

@@ -1,10 +1,16 @@
+use async_stream;
 use clap::Parser;
+use futures_core;
 use std::collections::{BTreeMap, HashMap};
+use std::pin::Pin;
 use toml;
 use tonic::{transport::Server, Request, Response, Status};
 
 use chay_proto::chayd_service_server::{ChaydService, ChaydServiceServer};
-use chay_proto::{ChaydServiceGetHealthRequest, ChaydServiceGetHealthResponse};
+use chay_proto::{
+    ChaydServiceGetHealthRequest, ChaydServiceGetHealthResponse, ChaydServiceGetStatusRequest,
+    ChaydServiceGetStatusResponse,
+};
 
 pub mod chay_proto {
     tonic::include_proto!("chay.proto.v1");
@@ -331,6 +337,14 @@ pub struct ChaydServiceServerImpl {}
 
 #[tonic::async_trait]
 impl ChaydService for ChaydServiceServerImpl {
+    type GetStatusStream = Pin<
+        Box<
+            dyn futures_core::Stream<Item = Result<ChaydServiceGetStatusResponse, Status>>
+                + Send
+                + 'static,
+        >,
+    >;
+
     async fn get_health(
         &self,
         _request: Request<ChaydServiceGetHealthRequest>,
@@ -338,6 +352,24 @@ impl ChaydService for ChaydServiceServerImpl {
         println!("Received GetHealth request");
         let response = ChaydServiceGetHealthResponse {};
         Ok(Response::new(response))
+    }
+
+    async fn get_status(
+        &self,
+        _request: Request<ChaydServiceGetStatusRequest>,
+    ) -> Result<Response<Self::GetStatusStream>, Status> {
+        println!("Opening GetStatus request");
+        let output = async_stream::try_stream! {
+            let mut wait_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+            loop {
+                let response = ChaydServiceGetStatusResponse {
+                    program_statuses: vec![],
+                };
+                yield response;
+                wait_interval.tick().await;
+            }
+        };
+        Ok(Response::new(Box::pin(output) as Self::GetStatusStream))
     }
 }
 

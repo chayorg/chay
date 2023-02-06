@@ -12,12 +12,17 @@ name = "chay"
 path = "chay/chay_main.rs"
 
 [dependencies]
+async-stream = "0.3.3"
 clap = { version = "4.0.23", features = ["derive"] }
-prost = "0.11"
+futures-core = "0.3.26"
+prost = "0.11.6"
+prost-types = "0.11.6"
 serde = { version = "1.0.147", features = ["derive"] }
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+tokio-stream = "0.1.11"
 toml = "0.5.9"
 tonic = "0.8"
+tonic-types = "0.6.1"
 
 [build-dependencies]
 tonic-build = "0.8"

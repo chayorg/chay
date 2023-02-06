@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+package chay.proto.v1;
+
+enum ProgramStatus {
+  PROGRAM_STATUS_UNSPECIFIED = 0;
+  PROGRAM_STATUS_STOPPED = 1;
+  PROGRAM_STATUS_EXITED = 2;
+  PROGRAM_STATUS_BACKOFF = 3;
+  PROGRAM_STATUS_STARTING = 4;
+  PROGRAM_STATUS_RUNNING = 5;
+}
+
+message ProgramInfo {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Duration uptime = 2;
+  ProgramStatus program_status = 3;
+}
