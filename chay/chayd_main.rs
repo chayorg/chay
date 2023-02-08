@@ -2,7 +2,7 @@ use clap::Parser;
 use futures_core;
 use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream;
 use toml;
 use tonic::{transport::Server, Request, Response, Status};
 
@@ -85,6 +85,10 @@ impl Program {
         }
     }
 
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
     pub fn start(&mut self) -> std::io::Result<()> {
         let mut command = std::process::Command::new(&self.config.command());
         if let Some(args) = &self.config.args() {
@@ -154,7 +158,7 @@ impl<StateKey, AppContext> Machine<StateKey, AppContext>
 where
     StateKey: Clone + Eq + std::hash::Hash,
 {
-    fn new(
+    pub fn new(
         app_context: AppContext,
         init_state: StateKey,
         states: HashMap<StateKey, Box<dyn State<StateKey, AppContext>>>,
@@ -167,11 +171,15 @@ where
         };
     }
 
-    fn current_state_key(&self) -> StateKey {
+    pub fn current_state_key(&self) -> StateKey {
         return self.context.current_state_key.clone();
     }
 
-    fn update(&mut self) {
+    pub fn app_context(&self) -> &AppContext {
+        &self.app_context
+    }
+
+    pub fn update(&mut self) {
         let state_key = self.current_state_key();
         {
             let state = self.states.get_mut(&state_key).unwrap();
@@ -333,7 +341,49 @@ impl State<ProgramState, Program> for Running {
 }
 
 #[derive(Debug, Default)]
-pub struct ChaydServiceServerImpl {}
+struct ProgramStatesChannels {
+    senders:
+        HashMap<std::net::SocketAddr, tokio::sync::mpsc::Sender<HashMap<String, ProgramState>>>,
+}
+
+impl ProgramStatesChannels {
+    async fn broadcast(&self, program_states: &HashMap<String, ProgramState>) {
+        for (socket, tx) in &self.senders {
+            match tx.send(program_states.clone()).await {
+                Ok(_) => {}
+                Err(_) => {
+                    println!("[Broadcast] SendError: to {}", socket)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ChaydServiceServerImpl {
+    //program_states_rx: tokio::sync::mpsc::Receiver<HashMap<String, ProgramState>>,
+    program_states_channels: std::sync::Arc<tokio::sync::RwLock<ProgramStatesChannels>>,
+}
+
+impl ChaydServiceServerImpl {
+    pub fn new(
+        program_states_channels: std::sync::Arc<tokio::sync::RwLock<ProgramStatesChannels>>,
+    ) -> Self {
+        Self {
+            program_states_channels,
+        }
+    }
+}
+
+fn proto_from_program_state(program_state: ProgramState) -> chay_proto::ProgramState {
+    match program_state {
+        ProgramState::Stopped => chay_proto::ProgramState::Stopped,
+        ProgramState::Exited => chay_proto::ProgramState::Exited,
+        ProgramState::Backoff => chay_proto::ProgramState::Backoff,
+        ProgramState::Starting => chay_proto::ProgramState::Starting,
+        ProgramState::Running => chay_proto::ProgramState::Running,
+    }
+}
 
 #[tonic::async_trait]
 impl ChaydService for ChaydServiceServerImpl {
@@ -356,18 +406,32 @@ impl ChaydService for ChaydServiceServerImpl {
     ) -> Result<Response<Self::GetStatusStream>, Status> {
         let remote_addr = request.remote_addr().unwrap();
         println!("GetStatus client connected from {:?}", &remote_addr);
-
-        // spawn and channel are required if you want handle "disconnect" functionality
-        // the `out_stream` will not be polled after client disconnect
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::channel(1);
+        let (program_states_tx, mut program_states_rx) = tokio::sync::mpsc::channel(1);
+        {
+            self.program_states_channels
+                .write()
+                .await
+                .senders
+                .insert(remote_addr.clone(), program_states_tx);
+        }
+        let program_states_channels_clone = self.program_states_channels.clone();
         tokio::spawn(async move {
             let mut wait_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
-            loop {
-                // TODO(kgreenek): Implement this.
+            while let Some(program_states) = program_states_rx.recv().await {
+                let program_statuses_proto = program_states
+                    .iter()
+                    .map(|(program_name, program_state)| {
+                        let mut program_status = chay_proto::ProgramStatus::default();
+                        program_status.name = program_name.clone();
+                        program_status.set_state(proto_from_program_state(program_state.clone()));
+                        program_status
+                    })
+                    .collect();
                 let response = ChaydServiceGetStatusResponse {
-                    program_statuses: vec![],
+                    program_statuses: program_statuses_proto,
                 };
-                match tx.send(Result::<_, Status>::Ok(response)).await {
+                match stream_tx.send(Result::<_, Status>::Ok(response)).await {
                     // response was successfully queued to be send to client.
                     Ok(_) => {}
                     // output_stream was build from rx and both are dropped
@@ -377,12 +441,19 @@ impl ChaydService for ChaydServiceServerImpl {
                 }
                 wait_interval.tick().await;
             }
+            {
+                program_states_channels_clone
+                    .write()
+                    .await
+                    .senders
+                    .remove(&remote_addr);
+            }
             println!("GetStatus client disconnected from {:?}", &remote_addr);
         });
 
-        let output_stream = ReceiverStream::new(rx);
+        let response_stream = tokio_stream::wrappers::ReceiverStream::new(stream_rx);
         Ok(Response::new(
-            Box::pin(output_stream) as Self::GetStatusStream
+            Box::pin(response_stream) as Self::GetStatusStream
         ))
     }
 }
@@ -401,8 +472,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|(program_name, program_config)| new_fsm(program_name.clone(), program_config.clone()))
         .collect();
 
+    let program_states_channels =
+        std::sync::Arc::new(tokio::sync::RwLock::new(ProgramStatesChannels::default()));
+
     let chayd_addr = "[::1]:50051".parse()?;
-    let chayd_server = ChaydServiceServerImpl::default();
+    let chayd_server = ChaydServiceServerImpl::new(program_states_channels.clone());
 
     tokio::spawn(
         Server::builder()
@@ -416,5 +490,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for program_fsm in &mut program_fsms {
             program_fsm.update();
         }
+        let program_states: HashMap<String, ProgramState> = program_fsms
+            .iter()
+            .map(|machine| (machine.app_context().name(), machine.current_state_key()))
+            .collect();
+        program_states_channels
+            .read()
+            .await
+            .broadcast(&program_states)
+            .await;
     }
 }
