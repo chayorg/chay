@@ -1,8 +1,8 @@
-use async_stream;
 use clap::Parser;
 use futures_core;
 use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
+use tokio_stream::wrappers::ReceiverStream;
 use toml;
 use tonic::{transport::Server, Request, Response, Status};
 
@@ -338,11 +338,7 @@ pub struct ChaydServiceServerImpl {}
 #[tonic::async_trait]
 impl ChaydService for ChaydServiceServerImpl {
     type GetStatusStream = Pin<
-        Box<
-            dyn futures_core::Stream<Item = Result<ChaydServiceGetStatusResponse, Status>>
-                + Send
-                + 'static,
-        >,
+        Box<dyn futures_core::Stream<Item = Result<ChaydServiceGetStatusResponse, Status>> + Send>,
     >;
 
     async fn get_health(
@@ -356,20 +352,38 @@ impl ChaydService for ChaydServiceServerImpl {
 
     async fn get_status(
         &self,
-        _request: Request<ChaydServiceGetStatusRequest>,
+        request: Request<ChaydServiceGetStatusRequest>,
     ) -> Result<Response<Self::GetStatusStream>, Status> {
-        println!("Opening GetStatus request");
-        let output = async_stream::try_stream! {
+        let remote_addr = request.remote_addr().unwrap();
+        println!("GetStatus client connected from {:?}", &remote_addr);
+
+        // spawn and channel are required if you want handle "disconnect" functionality
+        // the `out_stream` will not be polled after client disconnect
+        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        tokio::spawn(async move {
             let mut wait_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
             loop {
+                // TODO(kgreenek): Implement this.
                 let response = ChaydServiceGetStatusResponse {
                     program_statuses: vec![],
                 };
-                yield response;
+                match tx.send(Result::<_, Status>::Ok(response)).await {
+                    // response was successfully queued to be send to client.
+                    Ok(_) => {}
+                    // output_stream was build from rx and both are dropped
+                    Err(_item) => {
+                        break;
+                    }
+                }
                 wait_interval.tick().await;
             }
-        };
-        Ok(Response::new(Box::pin(output) as Self::GetStatusStream))
+            println!("GetStatus client disconnected from {:?}", &remote_addr);
+        });
+
+        let output_stream = ReceiverStream::new(rx);
+        Ok(Response::new(
+            Box::pin(output_stream) as Self::GetStatusStream
+        ))
     }
 }
 
