@@ -1,8 +1,21 @@
 use chay_proto::chayd_service_client::ChaydServiceClient;
 use chay_proto::{ChaydServiceGetHealthRequest, ChaydServiceGetStatusRequest};
+use clap::Parser;
 
 pub mod chay_proto {
     tonic::include_proto!("chay.proto.v1");
+}
+
+#[derive(clap::Parser)]
+struct Args {
+    #[command(subcommand)]
+    action: Action,
+}
+
+#[derive(clap::Subcommand)]
+enum Action {
+    Health,
+    Status,
 }
 
 async fn stream_program_statuses(
@@ -19,15 +32,25 @@ async fn stream_program_statuses(
     Ok(())
 }
 
+async fn handle_health_action() -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = ChaydServiceClient::connect("http://[::1]:50051").await?;
+    let request = tonic::Request::new(ChaydServiceGetHealthRequest {});
+    let response = client.get_health(request).await?;
+    println!("{:?}", response);
+    Ok(())
+}
+
+async fn handle_status_action() -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = ChaydServiceClient::connect("http://[::1]:50051").await?;
+    stream_program_statuses(&mut client).await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = ChaydServiceClient::connect("http://[::1]:50051").await?;
-
-    let get_health_request = tonic::Request::new(ChaydServiceGetHealthRequest {});
-    let get_health_response = client.get_health(get_health_request).await?;
-    println!("get_health_response={:?}", get_health_response);
-
-    stream_program_statuses(&mut client).await?;
-
-    Ok(())
+    let args = Args::parse();
+    match &args.action {
+        Action::Health => handle_health_action().await,
+        Action::Status => handle_status_action().await,
+    }
 }

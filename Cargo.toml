@@ -13,7 +13,7 @@ path = "chay/chay_main.rs"
 
 [dependencies]
 async-stream = "0.3.3"
-clap = { version = "4.0.23", features = ["derive"] }
+clap = { version = "4.1.4", features = ["derive"] }
 futures-core = "0.3.26"
 prost = "0.11.6"
 prost-types = "0.11.6"
