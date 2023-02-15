@@ -7,6 +7,7 @@ package chay.proto.v1;
 service ChaydService {
   rpc GetHealth(ChaydServiceGetHealthRequest) returns (ChaydServiceGetHealthResponse);
   rpc GetStatus(ChaydServiceGetStatusRequest) returns (stream ChaydServiceGetStatusResponse);
+  rpc Start(ChaydServiceStartRequest) returns (ChaydServiceStartResponse);
 }
 
 message ChaydServiceGetHealthRequest {}
@@ -18,3 +19,10 @@ message ChaydServiceGetStatusRequest {}
 message ChaydServiceGetStatusResponse {
   repeated ProgramStatus program_statuses = 1;
 }
+
+message ChaydServiceStartRequest {
+  string program_expr = 1;
+}
+
+// TODO(kgreenek): Return useful information here to be printed by the caller.
+message ChaydServiceStartResponse {}

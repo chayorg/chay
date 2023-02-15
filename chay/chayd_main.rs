@@ -9,7 +9,7 @@ use tonic::{transport::Server, Request, Response, Status};
 use chay_proto::chayd_service_server::{ChaydService, ChaydServiceServer};
 use chay_proto::{
     ChaydServiceGetHealthRequest, ChaydServiceGetHealthResponse, ChaydServiceGetStatusRequest,
-    ChaydServiceGetStatusResponse,
+    ChaydServiceGetStatusResponse, ChaydServiceStartRequest, ChaydServiceStartResponse,
 };
 
 pub mod chay_proto {
@@ -22,6 +22,10 @@ pub mod chay_proto {
 struct Args {
     /// Path to the config file
     config_path: std::path::PathBuf,
+}
+
+fn bug_panic(message: &str) {
+    panic!("Internal Error! Please create a bug report: {}", message);
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -119,8 +123,18 @@ fn read_config(config_path: &std::path::PathBuf) -> std::io::Result<Config> {
     Ok(toml::from_str(&content)?)
 }
 
-trait State<StateKey, AppContext> {
-    fn update(&mut self, context: &mut dyn Context<StateKey>, app_context: &mut AppContext);
+trait State<StateKey, AppContext, Event> {
+    fn update(&mut self, _context: &mut dyn Context<StateKey>, _app_context: &mut AppContext) {}
+
+    fn react(
+        &mut self,
+        _event: &Event,
+        _context: &mut dyn Context<StateKey>,
+        _app_context: &mut AppContext,
+    ) -> MachineResult {
+        Ok(None)
+    }
+
     fn enter(&mut self, _app_context: &mut AppContext) {}
     fn exit(&mut self, _app_context: &mut AppContext) {}
 }
@@ -147,23 +161,25 @@ impl<StateKey> Context<StateKey> for ContextImpl<StateKey> {
     }
 }
 
-struct Machine<StateKey, AppContext> {
+type MachineResult = std::result::Result<Option<String>, String>;
+
+struct Machine<StateKey, AppContext, Event> {
     app_context: AppContext,
-    states: HashMap<StateKey, Box<dyn State<StateKey, AppContext>>>,
+    states: HashMap<StateKey, Box<dyn State<StateKey, AppContext, Event>>>,
     context: ContextImpl<StateKey>,
     first_update: bool,
 }
 
-impl<StateKey, AppContext> Machine<StateKey, AppContext>
+impl<StateKey, AppContext, Event> Machine<StateKey, AppContext, Event>
 where
     StateKey: Clone + Eq + std::hash::Hash,
 {
     pub fn new(
         app_context: AppContext,
         init_state: StateKey,
-        states: HashMap<StateKey, Box<dyn State<StateKey, AppContext>>>,
+        states: HashMap<StateKey, Box<dyn State<StateKey, AppContext, Event>>>,
     ) -> Self {
-        return Machine::<StateKey, AppContext> {
+        return Machine::<StateKey, AppContext, Event> {
             app_context,
             states,
             context: ContextImpl::<StateKey>::new(init_state),
@@ -180,6 +196,23 @@ where
     }
 
     pub fn update(&mut self) {
+        self.maybe_enter_on_first_update();
+        let state_key = self.current_state_key();
+        let state = self.states.get_mut(&state_key).unwrap();
+        state.update(&mut self.context, &mut self.app_context);
+        self.maybe_change_state(state_key);
+    }
+
+    pub fn react(&mut self, event: &Event) -> MachineResult {
+        self.maybe_enter_on_first_update();
+        let state_key = self.current_state_key();
+        let state = self.states.get_mut(&state_key).unwrap();
+        let result = state.react(event, &mut self.context, &mut self.app_context);
+        self.maybe_change_state(state_key);
+        result
+    }
+
+    fn maybe_enter_on_first_update(&mut self) {
         let state_key = self.current_state_key();
         {
             let state = self.states.get_mut(&state_key).unwrap();
@@ -188,12 +221,14 @@ where
                 // Ensure we call the enter method for the initial state before doing anything.
                 state.enter(&mut self.app_context);
             }
-            state.update(&mut self.context, &mut self.app_context);
         }
+    }
+
+    fn maybe_change_state(&mut self, old_state_key: StateKey) {
         let new_state_key = self.current_state_key();
-        if new_state_key != state_key {
+        if new_state_key != old_state_key {
             {
-                let old_state = self.states.get_mut(&state_key).unwrap();
+                let old_state = self.states.get_mut(&old_state_key).unwrap();
                 old_state.exit(&mut self.app_context);
             }
             let new_state = self.states.get_mut(&new_state_key).unwrap();
@@ -202,19 +237,23 @@ where
     }
 }
 
-fn new_fsm(program_name: String, config: ProgramConfig) -> Machine<ProgramState, Program> {
+fn new_fsm(
+    program_name: String,
+    config: ProgramConfig,
+) -> Machine<ProgramState, Program, ProgramEvent> {
     let program = Program::new(program_name, config.clone());
     let init_state = if config.autostart() {
         ProgramState::Starting
     } else {
         ProgramState::Stopped
     };
-    let stopped: Box<dyn State<ProgramState, Program>> = Box::new(Stopped::default());
-    let exited: Box<dyn State<ProgramState, Program>> = Box::new(Exited::default());
-    let backoff: Box<dyn State<ProgramState, Program>> = Box::new(Backoff::default());
-    let starting: Box<dyn State<ProgramState, Program>> = Box::new(Starting::default());
-    let running: Box<dyn State<ProgramState, Program>> = Box::new(Running::default());
-    return Machine::<ProgramState, Program>::new(
+    let stopped: Box<dyn State<ProgramState, Program, ProgramEvent>> = Box::new(Stopped::default());
+    let exited: Box<dyn State<ProgramState, Program, ProgramEvent>> = Box::new(Exited::default());
+    let backoff: Box<dyn State<ProgramState, Program, ProgramEvent>> = Box::new(Backoff::default());
+    let starting: Box<dyn State<ProgramState, Program, ProgramEvent>> =
+        Box::new(Starting::default());
+    let running: Box<dyn State<ProgramState, Program, ProgramEvent>> = Box::new(Running::default());
+    return Machine::<ProgramState, Program, ProgramEvent>::new(
         program,
         init_state,
         HashMap::from([
@@ -234,6 +273,10 @@ fn transition_to_backoff_or_exited(context: &mut dyn Context<ProgramState>, prog
     } else {
         context.transition(ProgramState::Exited);
     }
+}
+
+enum ProgramEvent {
+    Start,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -262,7 +305,7 @@ struct Starting {}
 #[derive(Default)]
 struct Running {}
 
-impl State<ProgramState, Program> for Stopped {
+impl State<ProgramState, Program, ProgramEvent> for Stopped {
     fn update(&mut self, _context: &mut dyn Context<ProgramState>, _program: &mut Program) {}
 
     fn enter(&mut self, program: &mut Program) {
@@ -271,7 +314,7 @@ impl State<ProgramState, Program> for Stopped {
     }
 }
 
-impl State<ProgramState, Program> for Exited {
+impl State<ProgramState, Program, ProgramEvent> for Exited {
     fn update(&mut self, _context: &mut dyn Context<ProgramState>, _program: &mut Program) {}
 
     fn enter(&mut self, program: &mut Program) {
@@ -280,7 +323,7 @@ impl State<ProgramState, Program> for Exited {
     }
 }
 
-impl State<ProgramState, Program> for Backoff {
+impl State<ProgramState, Program, ProgramEvent> for Backoff {
     fn update(&mut self, context: &mut dyn Context<ProgramState>, program: &mut Program) {
         let now = std::time::Instant::now();
         if (now - self.enter_time.unwrap())
@@ -301,7 +344,7 @@ impl State<ProgramState, Program> for Backoff {
     }
 }
 
-impl State<ProgramState, Program> for Starting {
+impl State<ProgramState, Program, ProgramEvent> for Starting {
     fn update(&mut self, context: &mut dyn Context<ProgramState>, program: &mut Program) {
         if program.is_running() {
             context.transition(ProgramState::Running);
@@ -318,7 +361,7 @@ impl State<ProgramState, Program> for Starting {
     }
 }
 
-impl State<ProgramState, Program> for Running {
+impl State<ProgramState, Program, ProgramEvent> for Running {
     fn update(&mut self, context: &mut dyn Context<ProgramState>, program: &mut Program) {
         if let Some(child_proc) = &mut program.child_proc {
             match child_proc.try_wait() {
@@ -359,18 +402,30 @@ impl ProgramStatesChannels {
     }
 }
 
+type ProgramEventsResult = Result<HashMap<String, MachineResult>, tonic::Status>;
+
 #[derive(Debug)]
 struct ChaydServiceServerImpl {
-    //program_states_rx: tokio::sync::mpsc::Receiver<HashMap<String, ProgramState>>,
     program_states_channels: std::sync::Arc<tokio::sync::RwLock<ProgramStatesChannels>>,
+    program_events_sender: tokio::sync::mpsc::Sender<(
+        ProgramEvent,
+        String,
+        tokio::sync::mpsc::Sender<ProgramEventsResult>,
+    )>,
 }
 
 impl ChaydServiceServerImpl {
     pub fn new(
         program_states_channels: std::sync::Arc<tokio::sync::RwLock<ProgramStatesChannels>>,
+        program_events_sender: tokio::sync::mpsc::Sender<(
+            ProgramEvent,
+            String,
+            tokio::sync::mpsc::Sender<ProgramEventsResult>,
+        )>,
     ) -> Self {
         Self {
             program_states_channels,
+            program_events_sender,
         }
     }
 }
@@ -383,6 +438,13 @@ fn proto_from_program_state(program_state: ProgramState) -> chay_proto::ProgramS
         ProgramState::Starting => chay_proto::ProgramState::Starting,
         ProgramState::Running => chay_proto::ProgramState::Running,
     }
+}
+
+fn proto_start_response_from_program_events_results(
+    _program_events_results: &HashMap<String, MachineResult>,
+) -> ChaydServiceStartResponse {
+    // TODO(kgreenek): Implement this.
+    ChaydServiceStartResponse::default()
 }
 
 #[tonic::async_trait]
@@ -417,7 +479,6 @@ impl ChaydService for ChaydServiceServerImpl {
         }
         let program_states_channels_clone = self.program_states_channels.clone();
         tokio::spawn(async move {
-            let mut wait_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
             while let Some(program_states) = program_states_rx.recv().await {
                 let program_statuses_proto = program_states
                     .iter()
@@ -439,7 +500,6 @@ impl ChaydService for ChaydServiceServerImpl {
                         break;
                     }
                 }
-                wait_interval.tick().await;
             }
             {
                 program_states_channels_clone
@@ -456,6 +516,66 @@ impl ChaydService for ChaydServiceServerImpl {
             Box::pin(response_stream) as Self::GetStatusStream
         ))
     }
+
+    async fn start(
+        &self,
+        request: Request<ChaydServiceStartRequest>,
+    ) -> Result<Response<ChaydServiceStartResponse>, Status> {
+        println!("Received Start request");
+        let (program_events_results_tx, mut program_events_results_rx) =
+            tokio::sync::mpsc::channel(1);
+        match self
+            .program_events_sender
+            .send((
+                ProgramEvent::Start,
+                request.into_inner().program_expr.clone(),
+                program_events_results_tx,
+            ))
+            .await
+        {
+            Ok(_) => {}
+            Err(_) => {
+                bug_panic("Could not send to start channel");
+            }
+        }
+        match program_events_results_rx.recv().await {
+            Some(result) => match result {
+                Ok(program_events_results) => {
+                    // TODO(greenek): Implement this.
+                    let response =
+                        proto_start_response_from_program_events_results(&program_events_results);
+                    Ok(Response::new(response))
+                }
+                Err(err) => Err(err),
+            },
+            None => {
+                bug_panic("Received None from start channel rx");
+                // Unreachable
+                Err(Status::unknown("Received None from start channel rx"))
+            }
+        }
+    }
+}
+
+fn update_program_fsms(program_fsms: &mut Vec<Machine<ProgramState, Program, ProgramEvent>>) {
+    for program_fsm in program_fsms {
+        program_fsm.update();
+    }
+}
+
+async fn broadcast_program_states(
+    program_fsms: &Vec<Machine<ProgramState, Program, ProgramEvent>>,
+    program_states_channels: &std::sync::Arc<tokio::sync::RwLock<ProgramStatesChannels>>,
+) {
+    let program_states: HashMap<String, ProgramState> = program_fsms
+        .iter()
+        .map(|machine| (machine.app_context().name(), machine.current_state_key()))
+        .collect();
+    program_states_channels
+        .read()
+        .await
+        .broadcast(&program_states)
+        .await;
 }
 
 #[tokio::main]
@@ -466,7 +586,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
 
-    let mut program_fsms: Vec<Machine<ProgramState, Program>> = config
+    let mut program_fsms: Vec<Machine<ProgramState, Program, ProgramEvent>> = config
         .programs
         .iter()
         .map(|(program_name, program_config)| new_fsm(program_name.clone(), program_config.clone()))
@@ -474,9 +594,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let program_states_channels =
         std::sync::Arc::new(tokio::sync::RwLock::new(ProgramStatesChannels::default()));
+    let (program_events_tx, mut program_events_rx) = tokio::sync::mpsc::channel(20);
 
     let chayd_addr = "[::1]:50051".parse()?;
-    let chayd_server = ChaydServiceServerImpl::new(program_states_channels.clone());
+    let chayd_server =
+        ChaydServiceServerImpl::new(program_states_channels.clone(), program_events_tx);
 
     tokio::spawn(
         Server::builder()
@@ -486,18 +608,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut fsm_update_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
     loop {
-        fsm_update_interval.tick().await;
-        for program_fsm in &mut program_fsms {
-            program_fsm.update();
+        tokio::select! {
+            _ = fsm_update_interval.tick() => {
+                update_program_fsms(&mut program_fsms);
+                broadcast_program_states(&program_fsms, &program_states_channels).await;
+            },
+            Some((program_event, _program_expr, program_events_tx)) = program_events_rx.recv() => {
+                // TODO(kgreneek): Implement the calls to react using proram_expr.
+                let mut result = HashMap::<String, MachineResult>::new();
+                for fsm in &mut program_fsms {
+                    result.insert(fsm.app_context().name(), fsm.react(&program_event));
+                }
+                match program_events_tx.send(Ok(result)).await {
+                    Ok(_) => {},
+                    Err(_) => println!("Warning: Could not send program events results"),
+                }
+                broadcast_program_states(&program_fsms, &program_states_channels).await;
+            }
         }
-        let program_states: HashMap<String, ProgramState> = program_fsms
-            .iter()
-            .map(|machine| (machine.app_context().name(), machine.current_state_key()))
-            .collect();
-        program_states_channels
-            .read()
-            .await
-            .broadcast(&program_states)
-            .await;
     }
 }
