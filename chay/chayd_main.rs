@@ -306,7 +306,19 @@ struct Starting {}
 struct Running {}
 
 impl State<ProgramState, Program, ProgramEvent> for Stopped {
-    fn update(&mut self, _context: &mut dyn Context<ProgramState>, _program: &mut Program) {}
+    fn react(
+        &mut self,
+        event: &ProgramEvent,
+        context: &mut dyn Context<ProgramState>,
+        _program: &mut Program,
+    ) -> MachineResult {
+        match event {
+            ProgramEvent::Start => {
+                context.transition(ProgramState::Starting);
+                MachineResult::Ok(None)
+            }
+        }
+    }
 
     fn enter(&mut self, program: &mut Program) {
         program.num_restarts = 0u32;
@@ -315,7 +327,19 @@ impl State<ProgramState, Program, ProgramEvent> for Stopped {
 }
 
 impl State<ProgramState, Program, ProgramEvent> for Exited {
-    fn update(&mut self, _context: &mut dyn Context<ProgramState>, _program: &mut Program) {}
+    fn react(
+        &mut self,
+        event: &ProgramEvent,
+        context: &mut dyn Context<ProgramState>,
+        _program: &mut Program,
+    ) -> MachineResult {
+        match event {
+            ProgramEvent::Start => {
+                context.transition(ProgramState::Starting);
+                MachineResult::Ok(None)
+            }
+        }
+    }
 
     fn enter(&mut self, program: &mut Program) {
         program.num_restarts = 0u32;
@@ -330,6 +354,22 @@ impl State<ProgramState, Program, ProgramEvent> for Backoff {
             >= std::time::Duration::from_secs(program.config.backoff_delay() as u64)
         {
             context.transition(ProgramState::Starting);
+        }
+    }
+
+    fn react(
+        &mut self,
+        event: &ProgramEvent,
+        context: &mut dyn Context<ProgramState>,
+        program: &mut Program,
+    ) -> MachineResult {
+        match event {
+            ProgramEvent::Start => {
+                // Reset num_restarts since the client explicitly told us to start again.
+                program.num_restarts = 0u32;
+                context.transition(ProgramState::Starting);
+                MachineResult::Ok(Some("Already starting (was backoff)".to_string()))
+            }
         }
     }
 
@@ -350,6 +390,22 @@ impl State<ProgramState, Program, ProgramEvent> for Starting {
             context.transition(ProgramState::Running);
         } else {
             transition_to_backoff_or_exited(context, program);
+        }
+    }
+
+    fn react(
+        &mut self,
+        event: &ProgramEvent,
+        context: &mut dyn Context<ProgramState>,
+        program: &mut Program,
+    ) -> MachineResult {
+        match event {
+            ProgramEvent::Start => {
+                // Reset num_restarts since the client explicitly told us to start again.
+                program.num_restarts = 0u32;
+                context.transition(ProgramState::Starting);
+                MachineResult::Ok(Some("Already starting".to_string()))
+            }
         }
     }
 
@@ -374,6 +430,17 @@ impl State<ProgramState, Program, ProgramEvent> for Running {
             }
         } else {
             panic!("Child proc is None in Running state");
+        }
+    }
+
+    fn react(
+        &mut self,
+        event: &ProgramEvent,
+        _context: &mut dyn Context<ProgramState>,
+        _program: &mut Program,
+    ) -> MachineResult {
+        match event {
+            ProgramEvent::Start => MachineResult::Ok(Some("Already running".to_string())),
         }
     }
 
@@ -529,10 +596,7 @@ impl ChaydService for ChaydServiceServerImpl {
                 let response = ChaydServiceGetStatusResponse {
                     program_statuses: program_statuses_proto,
                 };
-                match stream_tx
-                    .send(tonic::Result::Ok(response))
-                    .await
-                {
+                match stream_tx.send(tonic::Result::Ok(response)).await {
                     // response was successfully queued to be send to client.
                     Ok(_) => {}
                     // output_stream was build from rx and both are dropped
