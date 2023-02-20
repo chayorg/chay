@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package chay.proto.v1;
+
+// Indicates success or failure of a program event, such as "start", "restart", "stop", etc.
+message ProgramEventResult {
+  message Ok {
+    string message = 1;
+  }
+
+  message Err {
+    string message = 1;
+  }
+
+  oneof result {
+    Ok ok = 1;
+    Err err = 2;
+  }
+}

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use tokio_stream;
 use toml;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic;
 
 use chay_proto::chayd_service_server::{ChaydService, ChaydServiceServer};
 use chay_proto::{
@@ -440,32 +440,69 @@ fn proto_from_program_state(program_state: ProgramState) -> chay_proto::ProgramS
     }
 }
 
+fn proto_program_event_result_from_machine_result(
+    machine_result: &MachineResult,
+) -> chay_proto::ProgramEventResult {
+    match machine_result {
+        Ok(Some(message)) => chay_proto::ProgramEventResult {
+            result: Some(chay_proto::program_event_result::Result::Ok(
+                chay_proto::program_event_result::Ok {
+                    message: message.clone(),
+                },
+            )),
+        },
+        Ok(None) => chay_proto::ProgramEventResult {
+            result: Some(chay_proto::program_event_result::Result::Ok(
+                chay_proto::program_event_result::Ok::default(),
+            )),
+        },
+        Err(message) => chay_proto::ProgramEventResult {
+            result: Some(chay_proto::program_event_result::Result::Err(
+                chay_proto::program_event_result::Err {
+                    message: message.clone(),
+                },
+            )),
+        },
+    }
+}
+
 fn proto_start_response_from_program_events_results(
-    _program_events_results: &HashMap<String, MachineResult>,
+    program_events_results: &HashMap<String, MachineResult>,
 ) -> ChaydServiceStartResponse {
-    // TODO(kgreenek): Implement this.
-    ChaydServiceStartResponse::default()
+    let mut response = ChaydServiceStartResponse::default();
+    program_events_results
+        .iter()
+        .for_each(|(program_name, machine_result)| {
+            response.program_event_results.insert(
+                program_name.clone(),
+                proto_program_event_result_from_machine_result(&machine_result),
+            );
+        });
+    response
 }
 
 #[tonic::async_trait]
 impl ChaydService for ChaydServiceServerImpl {
     type GetStatusStream = Pin<
-        Box<dyn futures_core::Stream<Item = Result<ChaydServiceGetStatusResponse, Status>> + Send>,
+        Box<
+            dyn futures_core::Stream<Item = Result<ChaydServiceGetStatusResponse, tonic::Status>>
+                + Send,
+        >,
     >;
 
     async fn get_health(
         &self,
-        _request: Request<ChaydServiceGetHealthRequest>,
-    ) -> Result<Response<ChaydServiceGetHealthResponse>, Status> {
+        _request: tonic::Request<ChaydServiceGetHealthRequest>,
+    ) -> Result<tonic::Response<ChaydServiceGetHealthResponse>, tonic::Status> {
         println!("Received GetHealth request");
         let response = ChaydServiceGetHealthResponse {};
-        Ok(Response::new(response))
+        Ok(tonic::Response::new(response))
     }
 
     async fn get_status(
         &self,
-        request: Request<ChaydServiceGetStatusRequest>,
-    ) -> Result<Response<Self::GetStatusStream>, Status> {
+        request: tonic::Request<ChaydServiceGetStatusRequest>,
+    ) -> tonic::Result<tonic::Response<Self::GetStatusStream>, tonic::Status> {
         let remote_addr = request.remote_addr().unwrap();
         println!("GetStatus client connected from {:?}", &remote_addr);
         let (stream_tx, stream_rx) = tokio::sync::mpsc::channel(1);
@@ -492,11 +529,14 @@ impl ChaydService for ChaydServiceServerImpl {
                 let response = ChaydServiceGetStatusResponse {
                     program_statuses: program_statuses_proto,
                 };
-                match stream_tx.send(Result::<_, Status>::Ok(response)).await {
+                match stream_tx
+                    .send(tonic::Result::Ok(response))
+                    .await
+                {
                     // response was successfully queued to be send to client.
                     Ok(_) => {}
                     // output_stream was build from rx and both are dropped
-                    Err(_item) => {
+                    Err(_) => {
                         break;
                     }
                 }
@@ -512,15 +552,15 @@ impl ChaydService for ChaydServiceServerImpl {
         });
 
         let response_stream = tokio_stream::wrappers::ReceiverStream::new(stream_rx);
-        Ok(Response::new(
+        Ok(tonic::Response::new(
             Box::pin(response_stream) as Self::GetStatusStream
         ))
     }
 
     async fn start(
         &self,
-        request: Request<ChaydServiceStartRequest>,
-    ) -> Result<Response<ChaydServiceStartResponse>, Status> {
+        request: tonic::Request<ChaydServiceStartRequest>,
+    ) -> tonic::Result<tonic::Response<ChaydServiceStartResponse>, tonic::Status> {
         println!("Received Start request");
         let (program_events_results_tx, mut program_events_results_rx) =
             tokio::sync::mpsc::channel(1);
@@ -541,17 +581,18 @@ impl ChaydService for ChaydServiceServerImpl {
         match program_events_results_rx.recv().await {
             Some(result) => match result {
                 Ok(program_events_results) => {
-                    // TODO(greenek): Implement this.
                     let response =
                         proto_start_response_from_program_events_results(&program_events_results);
-                    Ok(Response::new(response))
+                    Ok(tonic::Response::new(response))
                 }
                 Err(err) => Err(err),
             },
             None => {
                 bug_panic("Received None from start channel rx");
                 // Unreachable
-                Err(Status::unknown("Received None from start channel rx"))
+                Err(tonic::Status::unknown(
+                    "Received None from start channel rx",
+                ))
             }
         }
     }
@@ -601,7 +642,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ChaydServiceServerImpl::new(program_states_channels.clone(), program_events_tx);
 
     tokio::spawn(
-        Server::builder()
+        tonic::transport::Server::builder()
             .add_service(ChaydServiceServer::new(chayd_server))
             .serve(chayd_addr),
     );
@@ -621,6 +662,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 match program_events_tx.send(Ok(result)).await {
                     Ok(_) => {},
+                    // This probably means that the connection was closed by the client before we
+                    // could respond.
                     Err(_) => println!("Warning: Could not send program events results"),
                 }
                 broadcast_program_states(&program_fsms, &program_states_channels).await;
