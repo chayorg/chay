@@ -5,6 +5,7 @@ use std::pin::Pin;
 use tokio_stream;
 use toml;
 use tonic;
+use wildmatch::WildMatch;
 
 use chay_proto::chayd_service_server::{ChaydService, ChaydServiceServer};
 use chay_proto::{
@@ -718,17 +719,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 update_program_fsms(&mut program_fsms);
                 broadcast_program_states(&program_fsms, &program_states_channels).await;
             },
-            Some((program_event, _program_expr, program_events_tx)) = program_events_rx.recv() => {
-                // TODO(kgreneek): Implement the calls to react using proram_expr.
+            Some((program_event, program_expr, program_events_tx)) = program_events_rx.recv() => {
                 let mut result = HashMap::<String, MachineResult>::new();
+                let match_all = program_expr == "all";
                 for fsm in &mut program_fsms {
-                    result.insert(fsm.app_context().name(), fsm.react(&program_event));
+                    let program_name = fsm.app_context().name();
+                    if match_all || WildMatch::new(&program_expr).matches(&program_name) {
+                        result.insert(program_name, fsm.react(&program_event));
+                    }
                 }
-                match program_events_tx.send(Ok(result)).await {
-                    Ok(_) => {},
-                    // This probably means that the connection was closed by the client before we
-                    // could respond.
-                    Err(_) => println!("Warning: Could not send program events results"),
+                if result.is_empty() {
+                    let status = tonic::Status::not_found(format!(
+                        "No programs found matching expression: {}",
+                        program_expr
+                    ));
+                    match program_events_tx.send(Err(status)).await {
+                        Ok(_) => {},
+                        // The connection was probably closed by the client.
+                        Err(_) => println!("Warning: Could not send program events results"),
+                    }
+                } else {
+                    match program_events_tx.send(Ok(result)).await {
+                        Ok(_) => {},
+                        // The connection was probably closed by the client.
+                        Err(_) => println!("Warning: Could not send program events results"),
+                    }
                 }
                 broadcast_program_states(&program_fsms, &program_states_channels).await;
             }

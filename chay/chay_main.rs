@@ -18,7 +18,7 @@ struct Args {
 enum Action {
     Health,
     Status,
-    Start,
+    Start { program_expr: String },
 }
 
 async fn stream_program_statuses(
@@ -49,9 +49,11 @@ async fn handle_status_action() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn handle_start_action() -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_start_action(program_expr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut client = ChaydServiceClient::connect("http://[::1]:50051").await?;
-    let request = tonic::Request::new(ChaydServiceStartRequest::default());
+    let request = tonic::Request::new(ChaydServiceStartRequest {
+        program_expr: program_expr.to_string(),
+    });
     let response = client.start(request).await?;
     println!("{:?}", response);
     Ok(())
@@ -63,6 +65,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match &args.action {
         Action::Health => handle_health_action().await,
         Action::Status => handle_status_action().await,
-        Action::Start => handle_start_action().await,
+        Action::Start { program_expr } => handle_start_action(&program_expr).await,
     }
 }
