@@ -565,6 +565,7 @@ impl State<ProgramState, Program, ProgramEvent> for Stopping {
     }
 
     fn enter(&mut self, program: &mut Program) {
+        self.sigterm_time = None;
         program.num_restarts = 0u32;
         println!("{} stopping", program.name);
     }
