@@ -556,40 +556,36 @@ impl State<ProgramState, Program, ProgramEvent> for Stopping {
         if let Some(child_proc) = &mut program.child_proc {
             match child_proc.try_wait() {
                 Ok(None) => {
-                    match self.sigterm_time {
-                        Some(sigterm_time) => {
-                            // We already sent SIGTERM in a previous update. Send SIGKILL if it
-                            // doesn't shut down within a reasonable timeout.
-                            let now = std::time::Instant::now();
-                            let sigkill_timeout = std::time::Duration::from_secs(
-                                program.config.sigkill_delay() as u64,
+                    if let Some(sigterm_time) = self.sigterm_time {
+                        // We already sent SIGTERM in a previous update. Send SIGKILL if it
+                        // doesn't shut down within a reasonable timeout.
+                        let now = std::time::Instant::now();
+                        let sigkill_timeout =
+                            std::time::Duration::from_secs(program.config.sigkill_delay() as u64);
+                        if (now - sigterm_time) >= sigkill_timeout {
+                            let pid = Pid::from_raw(child_proc.id() as i32);
+                            Stopping::kill_program(pid, &program_name, context);
+                            Stopping::transition_to_stopped_or_restart(
+                                program.should_restart,
+                                context,
                             );
-                            if (now - sigterm_time) >= sigkill_timeout {
-                                let pid = Pid::from_raw(child_proc.id() as i32);
+                        }
+                    } else {
+                        // We haven't sent SIGTERM yet, so do that now.
+                        self.sigterm_time = Some(std::time::Instant::now());
+                        let pid = Pid::from_raw(child_proc.id() as i32);
+                        match nix::sys::signal::kill(pid, Signal::SIGTERM) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!(
+                                    "Could not send SIGTERM to program {}: {:?}",
+                                    program_name, e
+                                );
                                 Stopping::kill_program(pid, &program_name, context);
                                 Stopping::transition_to_stopped_or_restart(
                                     program.should_restart,
                                     context,
                                 );
-                            }
-                        }
-                        None => {
-                            // We haven't sent SIGTERM yet, so do that now.
-                            self.sigterm_time = Some(std::time::Instant::now());
-                            let pid = Pid::from_raw(child_proc.id() as i32);
-                            match nix::sys::signal::kill(pid, Signal::SIGTERM) {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    println!(
-                                        "Could not send SIGTERM to program {}: {:?}",
-                                        program_name, e
-                                    );
-                                    Stopping::kill_program(pid, &program_name, context);
-                                    Stopping::transition_to_stopped_or_restart(
-                                        program.should_restart,
-                                        context,
-                                    );
-                                }
                             }
                         }
                     }
