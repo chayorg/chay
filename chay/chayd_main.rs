@@ -1,5 +1,7 @@
 use clap::Parser;
 use futures_core;
+use nix::sys::signal::Signal;
+use nix::unistd::Pid;
 use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use tokio_stream;
@@ -39,6 +41,7 @@ struct ProgramConfig {
     /// Seconds to wait after a program exits unexpectedly before attempted to restart the program.
     backoff_delay: Option<u32>,
     num_restart_attempts: Option<u32>,
+    sigkill_delay: Option<u32>,
 }
 
 impl ProgramConfig {
@@ -64,6 +67,10 @@ impl ProgramConfig {
 
     pub fn num_restart_attempts(&self) -> u32 {
         self.num_restart_attempts.unwrap_or(4u32)
+    }
+
+    pub fn sigkill_delay(&self) -> u32 {
+        self.sigkill_delay.unwrap_or(10u32)
     }
 }
 
@@ -96,6 +103,7 @@ impl Program {
     }
 
     pub fn start(&mut self) -> std::io::Result<()> {
+        self.reset_child_proc();
         let mut command = std::process::Command::new(&self.config.command());
         if let Some(args) = &self.config.args() {
             command.args(args);
@@ -107,6 +115,10 @@ impl Program {
             }
             Err(error) => Err(error),
         }
+    }
+
+    pub fn reset_child_proc(&mut self) {
+        self.child_proc = None;
     }
 
     pub fn is_running(&mut self) -> bool {
@@ -313,7 +325,9 @@ struct Starting {}
 struct Running {}
 
 #[derive(Default)]
-struct Stopping {}
+struct Stopping {
+    sigterm_time: Option<std::time::Instant>,
+}
 
 impl State<ProgramState, Program, ProgramEvent> for Stopped {
     fn react(
@@ -333,6 +347,7 @@ impl State<ProgramState, Program, ProgramEvent> for Stopped {
 
     fn enter(&mut self, program: &mut Program) {
         program.num_restarts = 0u32;
+        program.reset_child_proc();
         println!("{} stopped", program.name);
     }
 }
@@ -355,6 +370,7 @@ impl State<ProgramState, Program, ProgramEvent> for Exited {
 
     fn enter(&mut self, program: &mut Program) {
         program.num_restarts = 0u32;
+        program.reset_child_proc();
         println!("{} exited", program.name);
     }
 }
@@ -448,6 +464,7 @@ impl State<ProgramState, Program, ProgramEvent> for Running {
                     transition_to_backoff_or_exited(context, program);
                 }
             }
+            return;
         }
         unreachable!("Child proc is None in Running state");
     }
@@ -473,17 +490,57 @@ impl State<ProgramState, Program, ProgramEvent> for Running {
     }
 }
 
+fn kill_and_stop(pid: Pid, program_name: &str, context: &mut dyn Context<ProgramState>) {
+    println!("Sending SIGKILL to program {}", program_name);
+    match nix::sys::signal::kill(pid, Signal::SIGKILL) {
+        Ok(_) => {}
+        Err(e) => {
+            println!(
+                "Could not send SIGKILL to program {}: {:?}",
+                program_name, e
+            );
+        }
+    }
+    // Always transition to Stopped, even if sending SIGKILL failed. Presumably that would only
+    // happen if the program has already terminated somehow. I am not sure if this is actually
+    // possible.
+    context.transition(ProgramState::Stopped);
+}
+
 impl State<ProgramState, Program, ProgramEvent> for Stopping {
     fn update(&mut self, context: &mut dyn Context<ProgramState>, program: &mut Program) {
+        let program_name = program.name();
         if let Some(child_proc) = &mut program.child_proc {
             match child_proc.try_wait() {
                 Ok(None) => {
-                    // Running. Kill the program.
-                    // TODO(kgreenek): Send SIGTERM first before resorting to SIGKILL. Give the
-                    // user the ability to configure that timeout.
-                    match child_proc.kill() {
-                        Ok(_) => {}
-                        Err(_) => println!("Error stopping {}", program.name()),
+                    match self.sigterm_time {
+                        Some(sigterm_time) => {
+                            // We already sent SIGTERM in a previous update. Send SIGKILL if it
+                            // doesn't shut down with a reasonable timeout.
+                            let now = std::time::Instant::now();
+                            let sigkill_timeout = std::time::Duration::from_secs(
+                                program.config.sigkill_delay() as u64,
+                            );
+                            if (now - sigterm_time) >= sigkill_timeout {
+                                let pid = Pid::from_raw(child_proc.id() as i32);
+                                kill_and_stop(pid, &program_name, context);
+                            }
+                        }
+                        None => {
+                            // We haven' sent SIGTERM yet, so do that now.
+                            self.sigterm_time = Some(std::time::Instant::now());
+                            let pid = Pid::from_raw(child_proc.id() as i32);
+                            match nix::sys::signal::kill(pid, Signal::SIGTERM) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    println!(
+                                        "Could not send SIGTERM to program {}: {:?}",
+                                        program_name, e
+                                    );
+                                    kill_and_stop(pid, &program_name, context);
+                                }
+                            }
+                        }
                     }
                 }
                 Ok(Some(_)) | Err(_) => {
@@ -498,14 +555,11 @@ impl State<ProgramState, Program, ProgramEvent> for Stopping {
     fn react(
         &mut self,
         event: &ProgramEvent,
-        context: &mut dyn Context<ProgramState>,
+        _context: &mut dyn Context<ProgramState>,
         _program: &mut Program,
     ) -> MachineResult {
         match event {
-            ProgramEvent::Start => {
-                context.transition(ProgramState::Starting);
-                MachineResult::Ok(None)
-            }
+            ProgramEvent::Start => MachineResult::Err("Cannot start while stopping".to_string()),
             ProgramEvent::Stop => MachineResult::Ok(Some("Already stopping".to_string())),
         }
     }
