@@ -12,8 +12,9 @@ use wildmatch::WildMatch;
 use chay_proto::chayd_service_server::{ChaydService, ChaydServiceServer};
 use chay_proto::{
     ChaydServiceGetHealthRequest, ChaydServiceGetHealthResponse, ChaydServiceGetStatusRequest,
-    ChaydServiceGetStatusResponse, ChaydServiceStartRequest, ChaydServiceStartResponse,
-    ChaydServiceStopRequest, ChaydServiceStopResponse,
+    ChaydServiceGetStatusResponse, ChaydServiceRestartRequest, ChaydServiceRestartResponse,
+    ChaydServiceStartRequest, ChaydServiceStartResponse, ChaydServiceStopRequest,
+    ChaydServiceStopResponse,
 };
 
 pub mod chay_proto {
@@ -86,6 +87,7 @@ struct Program {
     config: ProgramConfig,
     num_restarts: u32,
     child_proc: Option<std::process::Child>,
+    should_restart: bool,
 }
 
 impl Program {
@@ -95,6 +97,7 @@ impl Program {
             config,
             num_restarts: 0u32,
             child_proc: None,
+            should_restart: false,
         }
     }
 
@@ -295,6 +298,7 @@ fn transition_to_backoff_or_exited(context: &mut dyn Context<ProgramState>, prog
 enum ProgramEvent {
     Start,
     Stop,
+    Restart,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -342,6 +346,10 @@ impl State<ProgramState, Program, ProgramEvent> for Stopped {
                 MachineResult::Ok(None)
             }
             ProgramEvent::Stop => MachineResult::Ok(Some("Already stopped".to_string())),
+            ProgramEvent::Restart => {
+                context.transition(ProgramState::Starting);
+                MachineResult::Ok(Some("Wasn't running (was stopped)".to_string()))
+            }
         }
     }
 
@@ -365,6 +373,10 @@ impl State<ProgramState, Program, ProgramEvent> for Exited {
                 MachineResult::Ok(None)
             }
             ProgramEvent::Stop => MachineResult::Ok(Some("Already stopped (exited)".to_string())),
+            ProgramEvent::Restart => {
+                context.transition(ProgramState::Starting);
+                MachineResult::Ok(Some("Wasn't running (was exited)".to_string()))
+            }
         }
     }
 
@@ -401,6 +413,12 @@ impl State<ProgramState, Program, ProgramEvent> for Backoff {
             ProgramEvent::Stop => {
                 context.transition(ProgramState::Stopping);
                 MachineResult::Ok(None)
+            }
+            ProgramEvent::Restart => {
+                // Reset num_restarts since the client explicitly told us to start again.
+                program.num_restarts = 0u32;
+                context.transition(ProgramState::Starting);
+                MachineResult::Ok(Some("Wasn't running (was backoff)".to_string()))
             }
         }
     }
@@ -442,6 +460,13 @@ impl State<ProgramState, Program, ProgramEvent> for Starting {
                 context.transition(ProgramState::Stopping);
                 MachineResult::Ok(None)
             }
+            ProgramEvent::Restart => {
+                // Reset num_restarts since the client explicitly told us to start again.
+                program.num_restarts = 0u32;
+                MachineResult::Ok(Some(
+                    "Already starting (resetting backoff counter)".to_string(),
+                ))
+            }
         }
     }
 
@@ -473,12 +498,17 @@ impl State<ProgramState, Program, ProgramEvent> for Running {
         &mut self,
         event: &ProgramEvent,
         context: &mut dyn Context<ProgramState>,
-        _program: &mut Program,
+        program: &mut Program,
     ) -> MachineResult {
         match event {
             ProgramEvent::Start => MachineResult::Ok(Some("Already running".to_string())),
             ProgramEvent::Stop => {
+                program.should_restart = false;
                 context.transition(ProgramState::Stopping);
+                MachineResult::Ok(None)
+            }
+            ProgramEvent::Restart => {
+                program.should_restart = true;
                 MachineResult::Ok(None)
             }
         }
@@ -490,21 +520,34 @@ impl State<ProgramState, Program, ProgramEvent> for Running {
     }
 }
 
-fn kill_and_stop(pid: Pid, program_name: &str, context: &mut dyn Context<ProgramState>) {
-    println!("Sending SIGKILL to program {}", program_name);
-    match nix::sys::signal::kill(pid, Signal::SIGKILL) {
-        Ok(_) => {}
-        Err(e) => {
-            println!(
-                "Could not send SIGKILL to program {}: {:?}",
-                program_name, e
-            );
+impl Stopping {
+    fn kill_program(pid: Pid, program_name: &str, context: &mut dyn Context<ProgramState>) {
+        println!("Sending SIGKILL to program {}", program_name);
+        match nix::sys::signal::kill(pid, Signal::SIGKILL) {
+            Ok(_) => {}
+            Err(e) => {
+                println!(
+                    "Could not send SIGKILL to program {}: {:?}",
+                    program_name, e
+                );
+            }
+        }
+        // Always transition to Stopped, even if sending SIGKILL failed. Presumably that would only
+        // happen if the program has already terminated somehow. I am not sure if this is actually
+        // possible.
+        context.transition(ProgramState::Stopped);
+    }
+
+    fn transition_to_stopped_or_restart(
+        should_restart: bool,
+        context: &mut dyn Context<ProgramState>,
+    ) {
+        if should_restart {
+            context.transition(ProgramState::Starting);
+        } else {
+            context.transition(ProgramState::Stopped);
         }
     }
-    // Always transition to Stopped, even if sending SIGKILL failed. Presumably that would only
-    // happen if the program has already terminated somehow. I am not sure if this is actually
-    // possible.
-    context.transition(ProgramState::Stopped);
 }
 
 impl State<ProgramState, Program, ProgramEvent> for Stopping {
@@ -516,18 +559,22 @@ impl State<ProgramState, Program, ProgramEvent> for Stopping {
                     match self.sigterm_time {
                         Some(sigterm_time) => {
                             // We already sent SIGTERM in a previous update. Send SIGKILL if it
-                            // doesn't shut down with a reasonable timeout.
+                            // doesn't shut down within a reasonable timeout.
                             let now = std::time::Instant::now();
                             let sigkill_timeout = std::time::Duration::from_secs(
                                 program.config.sigkill_delay() as u64,
                             );
                             if (now - sigterm_time) >= sigkill_timeout {
                                 let pid = Pid::from_raw(child_proc.id() as i32);
-                                kill_and_stop(pid, &program_name, context);
+                                Stopping::kill_program(pid, &program_name, context);
+                                Stopping::transition_to_stopped_or_restart(
+                                    program.should_restart,
+                                    context,
+                                );
                             }
                         }
                         None => {
-                            // We haven' sent SIGTERM yet, so do that now.
+                            // We haven't sent SIGTERM yet, so do that now.
                             self.sigterm_time = Some(std::time::Instant::now());
                             let pid = Pid::from_raw(child_proc.id() as i32);
                             match nix::sys::signal::kill(pid, Signal::SIGTERM) {
@@ -537,18 +584,22 @@ impl State<ProgramState, Program, ProgramEvent> for Stopping {
                                         "Could not send SIGTERM to program {}: {:?}",
                                         program_name, e
                                     );
-                                    kill_and_stop(pid, &program_name, context);
+                                    Stopping::kill_program(pid, &program_name, context);
+                                    Stopping::transition_to_stopped_or_restart(
+                                        program.should_restart,
+                                        context,
+                                    );
                                 }
                             }
                         }
                     }
                 }
                 Ok(Some(_)) | Err(_) => {
-                    context.transition(ProgramState::Stopped);
+                    Stopping::transition_to_stopped_or_restart(program.should_restart, context);
                 }
             }
         } else {
-            context.transition(ProgramState::Stopped);
+            Stopping::transition_to_stopped_or_restart(program.should_restart, context);
         }
     }
 
@@ -556,11 +607,18 @@ impl State<ProgramState, Program, ProgramEvent> for Stopping {
         &mut self,
         event: &ProgramEvent,
         _context: &mut dyn Context<ProgramState>,
-        _program: &mut Program,
+        program: &mut Program,
     ) -> MachineResult {
         match event {
             ProgramEvent::Start => MachineResult::Err("Cannot start while stopping".to_string()),
-            ProgramEvent::Stop => MachineResult::Ok(Some("Already stopping".to_string())),
+            ProgramEvent::Stop => {
+                program.should_restart = false;
+                MachineResult::Ok(Some("Already stopping".to_string()))
+            }
+            ProgramEvent::Restart => {
+                program.should_restart = true;
+                MachineResult::Ok(Some("Will restart after stopping".to_string()))
+            }
         }
     }
 
@@ -568,6 +626,10 @@ impl State<ProgramState, Program, ProgramEvent> for Stopping {
         self.sigterm_time = None;
         program.num_restarts = 0u32;
         println!("{} stopping", program.name);
+    }
+
+    fn exit(&mut self, program: &mut Program) {
+        program.should_restart = false;
     }
 }
 
@@ -685,6 +747,21 @@ fn proto_stop_response_from_program_events_results(
     response
 }
 
+fn proto_restart_response_from_program_events_results(
+    program_events_results: &HashMap<String, MachineResult>,
+) -> ChaydServiceRestartResponse {
+    let mut response = ChaydServiceRestartResponse::default();
+    program_events_results
+        .iter()
+        .for_each(|(program_name, machine_result)| {
+            response.program_event_results.insert(
+                program_name.clone(),
+                proto_program_event_result_from_machine_result(&machine_result),
+            );
+        });
+    response
+}
+
 #[tonic::async_trait]
 impl ChaydService for ChaydServiceServerImpl {
     type GetStatusStream = Pin<
@@ -696,9 +773,9 @@ impl ChaydService for ChaydServiceServerImpl {
 
     async fn get_health(
         &self,
-        _request: tonic::Request<ChaydServiceGetHealthRequest>,
+        request: tonic::Request<ChaydServiceGetHealthRequest>,
     ) -> Result<tonic::Response<ChaydServiceGetHealthResponse>, tonic::Status> {
-        println!("Received GetHealth request");
+        println!("Received GetHealth request: {:?}", request.get_ref());
         let response = ChaydServiceGetHealthResponse {};
         Ok(tonic::Response::new(response))
     }
@@ -762,14 +839,14 @@ impl ChaydService for ChaydServiceServerImpl {
         &self,
         request: tonic::Request<ChaydServiceStartRequest>,
     ) -> tonic::Result<tonic::Response<ChaydServiceStartResponse>, tonic::Status> {
-        println!("Received Start request");
+        println!("Received Start request {:?}", request.get_ref());
         let (program_events_results_tx, mut program_events_results_rx) =
             tokio::sync::mpsc::channel(1);
         match self
             .program_events_sender
             .send((
                 ProgramEvent::Start,
-                request.into_inner().program_expr.clone(),
+                request.get_ref().program_expr.clone(),
                 program_events_results_tx,
             ))
             .await
@@ -800,21 +877,21 @@ impl ChaydService for ChaydServiceServerImpl {
         &self,
         request: tonic::Request<ChaydServiceStopRequest>,
     ) -> tonic::Result<tonic::Response<ChaydServiceStopResponse>, tonic::Status> {
-        println!("Received Stop request");
+        println!("Received Stop request: {:?}", request.get_ref());
         let (program_events_results_tx, mut program_events_results_rx) =
             tokio::sync::mpsc::channel(1);
         match self
             .program_events_sender
             .send((
                 ProgramEvent::Stop,
-                request.into_inner().program_expr.clone(),
+                request.get_ref().program_expr.clone(),
                 program_events_results_tx,
             ))
             .await
         {
             Ok(_) => {}
             Err(_) => {
-                bug_panic("Could not send to start channel");
+                bug_panic("Could not send to stop channel");
             }
         }
         match program_events_results_rx.recv().await {
@@ -825,10 +902,46 @@ impl ChaydService for ChaydServiceServerImpl {
                 Err(err) => Err(err),
             },
             None => {
-                bug_panic("Received None from start channel rx");
+                bug_panic("Received None from stop channel rx");
+                // Unreachable
+                Err(tonic::Status::unknown("Received None from stop channel rx"))
+            }
+        }
+    }
+
+    async fn restart(
+        &self,
+        request: tonic::Request<ChaydServiceRestartRequest>,
+    ) -> tonic::Result<tonic::Response<ChaydServiceRestartResponse>, tonic::Status> {
+        println!("Received Restart request: {:?}", request.get_ref());
+        let (program_events_results_tx, mut program_events_results_rx) =
+            tokio::sync::mpsc::channel(1);
+        match self
+            .program_events_sender
+            .send((
+                ProgramEvent::Restart,
+                request.get_ref().program_expr.clone(),
+                program_events_results_tx,
+            ))
+            .await
+        {
+            Ok(_) => {}
+            Err(_) => {
+                bug_panic("Could not send to restart channel");
+            }
+        }
+        match program_events_results_rx.recv().await {
+            Some(result) => match result {
+                Ok(program_events_results) => Ok(tonic::Response::new(
+                    proto_restart_response_from_program_events_results(&program_events_results),
+                )),
+                Err(err) => Err(err),
+            },
+            None => {
+                bug_panic("Received None from restart channel rx");
                 // Unreachable
                 Err(tonic::Status::unknown(
-                    "Received None from start channel rx",
+                    "Received None from restart channel rx",
                 ))
             }
         }
