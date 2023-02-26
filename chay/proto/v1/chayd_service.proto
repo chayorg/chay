@@ -9,6 +9,7 @@ service ChaydService {
   rpc GetHealth(ChaydServiceGetHealthRequest) returns (ChaydServiceGetHealthResponse);
   rpc GetStatus(ChaydServiceGetStatusRequest) returns (stream ChaydServiceGetStatusResponse);
   rpc Start(ChaydServiceStartRequest) returns (ChaydServiceStartResponse);
+  rpc Stop(ChaydServiceStopRequest) returns (ChaydServiceStopResponse);
 }
 
 message ChaydServiceGetHealthRequest {}
@@ -26,6 +27,15 @@ message ChaydServiceStartRequest {
 }
 
 message ChaydServiceStartResponse {
+  // The event result for each program. The key is the program name.
+  map<string, ProgramEventResult> program_event_results = 1;
+}
+
+message ChaydServiceStopRequest {
+  string program_expr = 1;
+}
+
+message ChaydServiceStopResponse {
   // The event result for each program. The key is the program name.
   map<string, ProgramEventResult> program_event_results = 1;
 }

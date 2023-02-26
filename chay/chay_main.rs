@@ -1,6 +1,7 @@
 use chay_proto::chayd_service_client::ChaydServiceClient;
 use chay_proto::{
     ChaydServiceGetHealthRequest, ChaydServiceGetStatusRequest, ChaydServiceStartRequest,
+    ChaydServiceStopRequest,
 };
 use clap::Parser;
 
@@ -19,6 +20,7 @@ enum Action {
     Health,
     Status,
     Start { program_expr: String },
+    Stop { program_expr: String },
 }
 
 async fn stream_program_statuses(
@@ -59,6 +61,16 @@ async fn handle_start_action(program_expr: &str) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+async fn handle_stop_action(program_expr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = ChaydServiceClient::connect("http://[::1]:50051").await?;
+    let request = tonic::Request::new(ChaydServiceStopRequest {
+        program_expr: program_expr.to_string(),
+    });
+    let response = client.stop(request).await?;
+    println!("{:?}", response);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -66,5 +78,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Action::Health => handle_health_action().await,
         Action::Status => handle_status_action().await,
         Action::Start { program_expr } => handle_start_action(&program_expr).await,
+        Action::Stop { program_expr } => handle_stop_action(&program_expr).await,
     }
 }

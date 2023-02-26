@@ -12,6 +12,7 @@ enum ProgramState {
   PROGRAM_STATE_BACKOFF = 3;
   PROGRAM_STATE_STARTING = 4;
   PROGRAM_STATE_RUNNING = 5;
+  PROGRAM_STATE_STOPPING = 6;
 }
 
 message ProgramStatus {
