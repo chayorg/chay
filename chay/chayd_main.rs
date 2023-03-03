@@ -4,6 +4,7 @@ use nix::sys::signal::Signal;
 use nix::unistd::Pid;
 use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
+use tera;
 use tokio_stream;
 use toml;
 use tonic;
@@ -33,10 +34,45 @@ fn bug_panic(message: &str) {
     panic!("Internal Error! Please create a bug report: {}", message);
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+type VarsConfig = HashMap<String, HashMap<String, String>>;
+
+#[derive(Clone, Debug, Default)]
+struct VarsRenderer {
+    tera: tera::Tera,
+    tera_ctx: tera::Context,
+}
+
+impl VarsRenderer {
+    pub fn new(vars_config: &VarsConfig) -> Self {
+        let mut vars_renderer = Self::default();
+        vars_renderer.tera = tera::Tera::default();
+        for (vars_table_name, vars_table) in &mut vars_config.iter() {
+            vars_renderer.tera_ctx.insert(vars_table_name, &vars_table);
+        }
+        vars_renderer
+    }
+
+    pub fn add_ctx_vars(&mut self, ctx_vars: HashMap<String, tera::Value>) {
+        self.tera_ctx
+            .insert("chayd", &HashMap::from([("ctx", ctx_vars)]));
+    }
+
+    pub fn render_str(&mut self, config_str: String) -> tera::Result<String> {
+        self.tera.render_str(&config_str, &self.tera_ctx)
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+struct LoggerConfig {
+    command: String,
+    args: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 struct ProgramConfig {
     command: String,
     args: Option<Vec<String>>,
+    logger: Option<String>,
     autostart: Option<bool>,
     autorestart: Option<bool>,
     /// Seconds to wait after a program exits unexpectedly before attempted to restart the program.
@@ -45,53 +81,122 @@ struct ProgramConfig {
     sigkill_delay: Option<u32>,
 }
 
-impl ProgramConfig {
+#[derive(Clone, Debug, serde::Deserialize)]
+struct Config {
+    vars: VarsConfig,
+    /// List of programs from the config file, sorted by key in alphabetical order.
+    programs: BTreeMap<String, ProgramConfig>,
+    loggers: BTreeMap<String, LoggerConfig>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RenderedProgramConfig {
+    program: ProgramConfig,
+    logger: LoggerConfig,
+}
+
+impl RenderedProgramConfig {
     pub fn command(&self) -> String {
-        self.command.clone()
+        self.program.command.clone()
     }
 
     pub fn args(&self) -> Option<Vec<String>> {
-        self.args.clone()
+        self.program.args.clone()
     }
 
     pub fn autostart(&self) -> bool {
-        self.autostart.unwrap_or(true)
+        self.program.autostart.unwrap_or(true)
     }
 
     pub fn autorestart(&self) -> bool {
-        self.autorestart.unwrap_or(true)
+        self.program.autorestart.unwrap_or(true)
     }
 
     pub fn backoff_delay(&self) -> u32 {
-        self.backoff_delay.unwrap_or(1u32)
+        self.program.backoff_delay.unwrap_or(1u32)
     }
 
     pub fn num_restart_attempts(&self) -> u32 {
-        self.num_restart_attempts.unwrap_or(4u32)
+        self.program.num_restart_attempts.unwrap_or(4u32)
     }
 
     pub fn sigkill_delay(&self) -> u32 {
-        self.sigkill_delay.unwrap_or(10u32)
+        self.program.sigkill_delay.unwrap_or(10u32)
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
-struct Config {
-    /// List of programs from the config file, sorted by key in alphabetical order.
-    programs: BTreeMap<String, ProgramConfig>,
+impl RenderedProgramConfig {
+    pub fn new(
+        config: &Config,
+        program_name: &str,
+        program_config: &ProgramConfig,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut rendered_config = Self::default();
+        let mut vars_renderer = VarsRenderer::new(&config.vars);
+        rendered_config.program = Self::render_program(program_config, &mut vars_renderer)?;
+        if let Some(logger_name) = &program_config.logger {
+            if let Some(logger_config) = config.loggers.get(logger_name) {
+                rendered_config.logger =
+                    Self::render_logger(logger_config, program_name, &mut vars_renderer)?;
+            } else {
+                return Err(format!("Logger not found: {logger_name}").into());
+            }
+        }
+        Ok(rendered_config)
+    }
+
+    fn render_program(
+        program_config: &ProgramConfig,
+        vars_renderer: &mut VarsRenderer,
+    ) -> Result<ProgramConfig, tera::Error> {
+        let mut rendered_program_config = program_config.clone();
+        rendered_program_config.command =
+            vars_renderer.render_str(program_config.command.clone())?;
+        if let Some(args) = &program_config.args {
+            let mut rendered_args: Vec<String> = vec![];
+            for arg in args {
+                let rendered_arg = vars_renderer.render_str(arg.clone())?;
+                rendered_args.push(rendered_arg);
+            }
+            rendered_program_config.args = Some(rendered_args);
+        }
+        Ok(rendered_program_config)
+    }
+
+    fn render_logger(
+        logger_config: &LoggerConfig,
+        program_name: &str,
+        vars_renderer: &mut VarsRenderer,
+    ) -> Result<LoggerConfig, tera::Error> {
+        vars_renderer.add_ctx_vars(HashMap::from([(
+            "program".to_string(),
+            tera::to_value(program_name).unwrap(),
+        )]));
+        let mut rendered_logger_config = logger_config.clone();
+        rendered_logger_config.command = vars_renderer.render_str(logger_config.command.clone())?;
+        if let Some(args) = &logger_config.args {
+            let mut rendered_args: Vec<String> = vec![];
+            for arg in args {
+                let rendered_arg = vars_renderer.render_str(arg.clone())?;
+                rendered_args.push(rendered_arg);
+            }
+            rendered_logger_config.args = Some(rendered_args);
+        }
+        Ok(rendered_logger_config)
+    }
 }
 
 #[derive(Debug)]
 struct Program {
     name: String,
-    config: ProgramConfig,
+    config: RenderedProgramConfig,
     num_restarts: u32,
     child_proc: Option<std::process::Child>,
     should_restart: bool,
 }
 
 impl Program {
-    pub fn new(name: String, config: ProgramConfig) -> Program {
+    pub fn new(name: String, config: RenderedProgramConfig) -> Program {
         Program {
             name,
             config,
@@ -135,9 +240,11 @@ impl Program {
     }
 }
 
-fn read_config(config_path: &std::path::PathBuf) -> std::io::Result<Config> {
+//fn read_config(config_path: &std::path::PathBuf) -> std::io::Result<Config> {
+fn read_config(config_path: &std::path::PathBuf) -> Result<Config, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(config_path)?;
-    Ok(toml::from_str(&content)?)
+    let config = toml::from_str(&content)?;
+    Ok(config)
 }
 
 trait State<StateKey, AppContext, Event> {
@@ -256,7 +363,7 @@ where
 
 fn new_fsm(
     program_name: String,
-    config: ProgramConfig,
+    config: &RenderedProgramConfig,
 ) -> Machine<ProgramState, Program, ProgramEvent> {
     let program = Program::new(program_name, config.clone());
     let init_state = if config.autostart() {
@@ -965,6 +1072,19 @@ async fn broadcast_program_states(
         .await;
 }
 
+fn render_config(
+    config: &Config,
+) -> Result<BTreeMap<String, RenderedProgramConfig>, Box<dyn std::error::Error>> {
+    let mut rendered_config = BTreeMap::new();
+    for (program_name, program_config) in &config.programs {
+        rendered_config.insert(
+            program_name.clone(),
+            RenderedProgramConfig::new(&config, program_name, &program_config)?,
+        );
+    }
+    Ok(rendered_config)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -972,11 +1092,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Error parsing toml file: {}", error);
         std::process::exit(1);
     });
+    let rendered_config = render_config(&config).unwrap_or_else(|error| {
+        println!("Invalid config: {}", error);
+        std::process::exit(1);
+    });
 
-    let mut program_fsms: Vec<Machine<ProgramState, Program, ProgramEvent>> = config
-        .programs
+    let mut program_fsms: Vec<Machine<ProgramState, Program, ProgramEvent>> = rendered_config
         .iter()
-        .map(|(program_name, program_config)| new_fsm(program_name.clone(), program_config.clone()))
+        .map(|(program_name, program_config)| new_fsm(program_name.clone(), &program_config))
         .collect();
 
     let program_states_channels =

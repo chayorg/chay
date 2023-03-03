@@ -1,12 +1,29 @@
-[programs.print_foo]
-command = "/bin/bash"
-args = ["-c", "echo 'foo'; sleep 2; exit 1;"]
+[vars.example]
+# TODO(kgreenek): Support environment variables to support e.g. $HOME.
+log_dir = "/tmp/chayd"
+foo = "Hello foo"
 
-[programs.print_bar]
+[programs.foo]
 command = "/bin/bash"
-args = ["-c", "while true; do echo 'bar'; sleep 1; done"]
+args = ["-c", "while true; do echo '{{example.foo}}'; sleep 1; done"]
+logger = "simple_logger"
+
+[programs.bar]
+command = "/bin/bash"
+args = ["-c", "echo 'bar'; sleep 2; exit 1;"]
+autostart = false
 
 [programs.print_baz]
 command = "doesnotexist234"
 backoff_delay = 5  # seconds
 num_restart_attempts = 2
+autostart = false
+
+[loggers.simple_logger]
+command = "/usr/bin/split"
+args = [
+  "--numeric-suffixes",
+  "--bytes=10M",
+  "-",  # Read from stdin
+  "{{example.log_dir}}/{{chayd.ctx.program}}",  # log file prefix
+]
