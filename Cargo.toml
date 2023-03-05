@@ -3,14 +3,6 @@ name = "chay"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "chayd"
-path = "chay/chayd_main.rs"
-
-[[bin]]
-name = "chay"
-path = "chay/chay_main.rs"
-
 [dependencies]
 async-stream = "0.3.3"
 clap = { version = "4.1.4", features = ["derive"] }
