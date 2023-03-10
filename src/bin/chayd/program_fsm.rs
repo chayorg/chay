@@ -1,6 +1,5 @@
 use crate::program::Program;
 use nix::sys::signal::Signal;
-use nix::unistd::Pid;
 use std::collections::HashMap;
 
 pub type ProgramFsm = chay::fsm::Machine<ProgramState, Program, ProgramEvent>;
@@ -240,18 +239,9 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Running {
         context: &mut dyn chay::fsm::Context<ProgramState>,
         program: &mut Program,
     ) {
-        if let Some(child_proc) = &mut program.child_proc {
-            match child_proc.try_wait() {
-                Ok(None) => {
-                    // Running. Nothing to do.
-                }
-                Ok(Some(_)) | Err(_) => {
-                    transition_to_backoff_or_exited(context, program);
-                }
-            }
-            return;
+        if !program.is_running() {
+            transition_to_backoff_or_exited(context, program);
         }
-        unreachable!("Child proc is None in Running state");
     }
 
     fn react(
@@ -283,25 +273,25 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Running {
 }
 
 impl Stopping {
-    fn kill_program(
-        pid: Pid,
-        program_name: &str,
+    fn kill_program_and_stop(
+        program: &mut Program,
         context: &mut dyn chay::fsm::Context<ProgramState>,
     ) {
-        println!("Sending SIGKILL to program {}", program_name);
-        match nix::sys::signal::kill(pid, Signal::SIGKILL) {
+        println!("Sending SIGKILL to program {}", program.name());
+        match program.send_signal(Signal::SIGKILL) {
             Ok(_) => {}
             Err(e) => {
                 println!(
                     "Could not send SIGKILL to program {}: {:?}",
-                    program_name, e
+                    program.name(),
+                    e
                 );
             }
         }
-        // Always transition to Stopped, even if sending SIGKILL failed. Presumably that would only
-        // happen if the program has already terminated somehow. I am not sure if this is actually
-        // possible.
-        context.transition(ProgramState::Stopped);
+        // Always transition to Stopped, even if sending SIGKILL failed. Presumably that
+        // would only happen if the program has already terminated somehow. I am not
+        // sure if this is actually possible.
+        Stopping::transition_to_stopped_or_restart(program.should_restart, context);
     }
 
     fn transition_to_stopped_or_restart(
@@ -322,50 +312,33 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Stopping {
         context: &mut dyn chay::fsm::Context<ProgramState>,
         program: &mut Program,
     ) {
-        let program_name = program.name();
-        if let Some(child_proc) = &mut program.child_proc {
-            match child_proc.try_wait() {
-                Ok(None) => {
-                    if let Some(sigterm_time) = self.sigterm_time {
-                        // We already sent SIGTERM in a previous update. Send SIGKILL if it
-                        // doesn't shut down within a reasonable timeout.
-                        let now = std::time::Instant::now();
-                        let sigkill_timeout =
-                            std::time::Duration::from_secs(program.config.sigkill_delay() as u64);
-                        if (now - sigterm_time) >= sigkill_timeout {
-                            let pid = Pid::from_raw(child_proc.id() as i32);
-                            Stopping::kill_program(pid, &program_name, context);
-                            Stopping::transition_to_stopped_or_restart(
-                                program.should_restart,
-                                context,
-                            );
-                        }
-                    } else {
-                        // We haven't sent SIGTERM yet, so do that now.
-                        self.sigterm_time = Some(std::time::Instant::now());
-                        let pid = Pid::from_raw(child_proc.id() as i32);
-                        match nix::sys::signal::kill(pid, Signal::SIGTERM) {
-                            Ok(_) => {}
-                            Err(e) => {
-                                println!(
-                                    "Could not send SIGTERM to program {}: {:?}",
-                                    program_name, e
-                                );
-                                Stopping::kill_program(pid, &program_name, context);
-                                Stopping::transition_to_stopped_or_restart(
-                                    program.should_restart,
-                                    context,
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(Some(_)) | Err(_) => {
-                    Stopping::transition_to_stopped_or_restart(program.should_restart, context);
-                }
+        if !program.is_running() {
+            Stopping::transition_to_stopped_or_restart(program.should_restart, context);
+            return;
+        }
+        if let Some(sigterm_time) = self.sigterm_time {
+            // We already sent SIGTERM in a previous update. Send SIGKILL if it
+            // doesn't shut down within a reasonable timeout.
+            let now = std::time::Instant::now();
+            let sigkill_timeout =
+                std::time::Duration::from_secs(program.config.sigkill_delay() as u64);
+            if (now - sigterm_time) >= sigkill_timeout {
+                Stopping::kill_program_and_stop(program, context);
             }
         } else {
-            Stopping::transition_to_stopped_or_restart(program.should_restart, context);
+            // We haven't sent SIGTERM yet, so do that now.
+            self.sigterm_time = Some(std::time::Instant::now());
+            match program.send_signal(Signal::SIGTERM) {
+                Ok(_) => {}
+                Err(error) => {
+                    println!(
+                        "Could not send SIGTERM to program {}: {:?}",
+                        program.name(),
+                        error
+                    );
+                    Stopping::kill_program_and_stop(program, context);
+                }
+            }
         }
     }
 

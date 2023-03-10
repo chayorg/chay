@@ -1,3 +1,6 @@
+use nix::sys::signal::Signal;
+use nix::unistd::Pid;
+
 #[derive(Debug)]
 pub struct Program {
     pub name: String,
@@ -35,6 +38,14 @@ impl Program {
             }
             Err(error) => Err(error),
         }
+    }
+
+    pub fn send_signal(&self, signal: Signal) -> nix::Result<()> {
+        let child_proc = self.child_proc.as_ref().unwrap_or_else(|| {
+            panic!("Program::send_sigterm called while not running");
+        });
+        let pid = Pid::from_raw(child_proc.id() as i32);
+        nix::sys::signal::kill(pid, signal)
     }
 
     pub fn reset_child_proc(&mut self) {
