@@ -40,6 +40,27 @@ impl ProgramContext {
         self.name.clone()
     }
 
+    pub fn all_programs_are_running(&mut self) -> bool {
+        if let Some(logger) = &mut self.logger {
+            if !logger.is_running() {
+                return false;
+            }
+        }
+        self.program.is_running()
+    }
+
+    pub fn all_programs_are_stopped(&mut self) -> bool {
+        if !self.program.is_running() {
+            return false;
+        }
+        if let Some(logger) = &mut self.logger {
+            if logger.is_running() {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn reset(&mut self) {
         self.program.reset_child_proc();
         if let Some(logger) = &mut self.logger {

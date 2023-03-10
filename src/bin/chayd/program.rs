@@ -6,9 +6,7 @@ pub struct Program {
     pub name: String,
     pub command: String,
     pub args: Option<Vec<String>>,
-    pub num_restarts: u32,
     pub child_proc: Option<std::process::Child>,
-    pub should_restart: bool,
 }
 
 impl Program {
@@ -17,17 +15,29 @@ impl Program {
             name,
             command,
             args,
-            num_restarts: 0u32,
             child_proc: None,
-            should_restart: false,
         }
     }
 
-    pub fn start(&mut self) -> std::io::Result<()> {
+    pub fn start(
+        &mut self,
+        pipe_stdin: bool,
+        parent_proc: Option<&mut std::process::Child>,
+    ) -> std::io::Result<()> {
         self.reset_child_proc();
         let mut command = std::process::Command::new(&self.command);
         if let Some(args) = &self.args {
             command.args(args);
+        }
+        if pipe_stdin {
+            command.stdin(std::process::Stdio::piped());
+        }
+        if let Some(parent_proc) = parent_proc {
+            // Note: This will panic if parent_proc's stdin was not piped.
+            let parent_stdin = parent_proc.stdin.take().unwrap();
+            command.stdout(parent_stdin);
+            // TODO(kgreenek): Figure out how to support redirecting stderr to stdout.
+            //command.stderr(parent_stdin);
         }
         match command.spawn() {
             Ok(child_proc) => {
@@ -40,7 +50,7 @@ impl Program {
 
     pub fn send_signal(&self, signal: Signal) -> nix::Result<()> {
         let child_proc = self.child_proc.as_ref().unwrap_or_else(|| {
-            panic!("Program::send_sigterm called while not running");
+            panic!("Program::send_signal called while not running");
         });
         let pid = Pid::from_raw(child_proc.id() as i32);
         nix::sys::signal::kill(pid, signal)

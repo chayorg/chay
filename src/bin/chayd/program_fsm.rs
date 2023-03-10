@@ -191,7 +191,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Starting {
         context: &mut dyn chay::fsm::Context<ProgramState>,
         program_ctx: &mut ProgramContext,
     ) {
-        if program_ctx.program.is_running() {
+        if program_ctx.all_programs_are_running() {
             context.transition(ProgramState::Running);
         } else {
             transition_to_backoff_or_exited(context, program_ctx);
@@ -227,8 +227,23 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Starting {
 
     fn enter(&mut self, program_ctx: &mut ProgramContext) {
         println!("{} starting", program_ctx.name);
-        if let Err(error) = program_ctx.program.start() {
-            println!("{} spawn error: {error}", program_ctx.name);
+        if let Some(logger) = &mut program_ctx.logger {
+            if !logger.is_running() {
+                if let Err(error) = logger.start(true, None) {
+                    println!("{} spawn error: {error}", logger.name);
+                    return;
+                }
+            }
+            if let Err(error) = program_ctx
+                .program
+                .start(false, Some(&mut logger.child_proc.as_mut().unwrap()))
+            {
+                println!("{} spawn error: {error}", program_ctx.name);
+            }
+        } else {
+            if let Err(error) = program_ctx.program.start(false, None) {
+                println!("{} spawn error: {error}", program_ctx.name);
+            }
         }
     }
 }
@@ -239,7 +254,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Running {
         context: &mut dyn chay::fsm::Context<ProgramState>,
         program_ctx: &mut ProgramContext,
     ) {
-        if !program_ctx.program.is_running() {
+        if !program_ctx.all_programs_are_running() {
             transition_to_backoff_or_exited(context, program_ctx);
         }
     }
@@ -277,14 +292,27 @@ impl Stopping {
         program_ctx: &mut ProgramContext,
         context: &mut dyn chay::fsm::Context<ProgramState>,
     ) {
-        println!("Sending SIGKILL to program {}", program_ctx.name);
-        match program_ctx.program.send_signal(Signal::SIGKILL) {
-            Ok(_) => {}
-            Err(e) => {
-                println!(
-                    "Could not send SIGKILL to program {}: {:?}",
-                    program_ctx.name, e
-                );
+        if let Some(logger) = &mut program_ctx.logger {
+            if logger.is_running() {
+                println!("Sending SIGKILL to program {}", logger.name);
+                match logger.send_signal(Signal::SIGKILL) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("Could not send SIGKILL to program {}: {:?}", logger.name, e);
+                    }
+                }
+            }
+        }
+        if program_ctx.program.is_running() {
+            println!("Sending SIGKILL to program {}", program_ctx.program.name);
+            match program_ctx.program.send_signal(Signal::SIGKILL) {
+                Ok(_) => {}
+                Err(e) => {
+                    println!(
+                        "Could not send SIGKILL to program {}: {:?}",
+                        program_ctx.program.name, e
+                    );
+                }
             }
         }
         // Always transition to Stopped, even if sending SIGKILL failed. Presumably that
@@ -311,7 +339,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Stopping {
         context: &mut dyn chay::fsm::Context<ProgramState>,
         program_ctx: &mut ProgramContext,
     ) {
-        if !program_ctx.program.is_running() {
+        if program_ctx.all_programs_are_stopped() {
             Stopping::transition_to_stopped_or_restart(program_ctx.should_restart, context);
             return;
         }
@@ -327,14 +355,28 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Stopping {
         } else {
             // We haven't sent SIGTERM yet, so do that now.
             self.sigterm_time = Some(std::time::Instant::now());
-            match program_ctx.program.send_signal(Signal::SIGTERM) {
-                Ok(_) => {}
-                Err(error) => {
-                    println!(
-                        "Could not send SIGTERM to program {}: {:?}",
-                        program_ctx.name, error
-                    );
-                    Stopping::kill_program_and_stop(program_ctx, context);
+            if let Some(logger) = &mut program_ctx.logger {
+                if logger.is_running() {
+                    match logger.send_signal(Signal::SIGTERM) {
+                        Ok(_) => {}
+                        Err(error) => {
+                            println!(
+                                "Could not send SIGTERM to program {}: {:?}",
+                                program_ctx.name, error
+                            );
+                        }
+                    }
+                }
+            }
+            if program_ctx.program.is_running() {
+                match program_ctx.program.send_signal(Signal::SIGTERM) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        println!(
+                            "Could not send SIGTERM to program {}: {:?}",
+                            program_ctx.name, error
+                        );
+                    }
                 }
             }
         }
