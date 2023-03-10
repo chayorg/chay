@@ -13,6 +13,7 @@ mod chay_proto {
 mod chayd_service_impl;
 mod config;
 mod program;
+mod program_context;
 mod program_fsm;
 mod proto_converters;
 

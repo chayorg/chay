@@ -4,31 +4,29 @@ use nix::unistd::Pid;
 #[derive(Debug)]
 pub struct Program {
     pub name: String,
-    pub config: crate::config::RenderedProgramConfig,
+    pub command: String,
+    pub args: Option<Vec<String>>,
     pub num_restarts: u32,
     pub child_proc: Option<std::process::Child>,
     pub should_restart: bool,
 }
 
 impl Program {
-    pub fn new(name: String, config: crate::config::RenderedProgramConfig) -> Program {
+    pub fn new(name: String, command: String, args: Option<Vec<String>>) -> Program {
         Program {
             name,
-            config,
+            command,
+            args,
             num_restarts: 0u32,
             child_proc: None,
             should_restart: false,
         }
     }
 
-    pub fn name(&self) -> String {
-        self.name.clone()
-    }
-
     pub fn start(&mut self) -> std::io::Result<()> {
         self.reset_child_proc();
-        let mut command = std::process::Command::new(&self.config.command());
-        if let Some(args) = &self.config.args() {
+        let mut command = std::process::Command::new(&self.command);
+        if let Some(args) = &self.args {
             command.args(args);
         }
         match command.spawn() {

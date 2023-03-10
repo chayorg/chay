@@ -1,33 +1,33 @@
-use crate::program::Program;
+use crate::program_context::ProgramContext;
 use nix::sys::signal::Signal;
 use std::collections::HashMap;
 
-pub type ProgramFsm = chay::fsm::Machine<ProgramState, Program, ProgramEvent>;
+pub type ProgramFsm = chay::fsm::Machine<ProgramState, ProgramContext, ProgramEvent>;
 
 pub fn new_program_fsm(
     program_name: String,
     config: &crate::config::RenderedProgramConfig,
 ) -> ProgramFsm {
-    let program = Program::new(program_name, config.clone());
+    let program_ctx = ProgramContext::new(&program_name, config.clone());
     let init_state = if config.autostart() {
         ProgramState::Starting
     } else {
         ProgramState::Stopped
     };
-    let stopped: Box<dyn chay::fsm::State<ProgramState, Program, ProgramEvent>> =
+    let stopped: Box<dyn chay::fsm::State<ProgramState, ProgramContext, ProgramEvent>> =
         Box::new(Stopped::default());
-    let exited: Box<dyn chay::fsm::State<ProgramState, Program, ProgramEvent>> =
+    let exited: Box<dyn chay::fsm::State<ProgramState, ProgramContext, ProgramEvent>> =
         Box::new(Exited::default());
-    let backoff: Box<dyn chay::fsm::State<ProgramState, Program, ProgramEvent>> =
+    let backoff: Box<dyn chay::fsm::State<ProgramState, ProgramContext, ProgramEvent>> =
         Box::new(Backoff::default());
-    let starting: Box<dyn chay::fsm::State<ProgramState, Program, ProgramEvent>> =
+    let starting: Box<dyn chay::fsm::State<ProgramState, ProgramContext, ProgramEvent>> =
         Box::new(Starting::default());
-    let running: Box<dyn chay::fsm::State<ProgramState, Program, ProgramEvent>> =
+    let running: Box<dyn chay::fsm::State<ProgramState, ProgramContext, ProgramEvent>> =
         Box::new(Running::default());
-    let stopping: Box<dyn chay::fsm::State<ProgramState, Program, ProgramEvent>> =
+    let stopping: Box<dyn chay::fsm::State<ProgramState, ProgramContext, ProgramEvent>> =
         Box::new(Stopping::default());
-    return chay::fsm::Machine::<ProgramState, Program, ProgramEvent>::new(
-        program,
+    return ProgramFsm::new(
+        program_ctx,
         init_state,
         HashMap::from([
             (ProgramState::Stopped, stopped),
@@ -78,12 +78,12 @@ pub struct Stopping {
     sigterm_time: Option<std::time::Instant>,
 }
 
-impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Stopped {
+impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Stopped {
     fn react(
         &mut self,
         event: &ProgramEvent,
         context: &mut dyn chay::fsm::Context<ProgramState>,
-        _program: &mut Program,
+        _program_ctx: &mut ProgramContext,
     ) -> chay::fsm::MachineResult {
         match event {
             ProgramEvent::Start => {
@@ -98,19 +98,19 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Stopped {
         }
     }
 
-    fn enter(&mut self, program: &mut Program) {
-        program.num_restarts = 0u32;
-        program.reset_child_proc();
-        println!("{} stopped", program.name);
+    fn enter(&mut self, program_ctx: &mut ProgramContext) {
+        program_ctx.num_restarts = 0u32;
+        program_ctx.reset();
+        println!("{} stopped", program_ctx.name);
     }
 }
 
-impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Exited {
+impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Exited {
     fn react(
         &mut self,
         event: &ProgramEvent,
         context: &mut dyn chay::fsm::Context<ProgramState>,
-        _program: &mut Program,
+        _program_ctx: &mut ProgramContext,
     ) -> chay::fsm::MachineResult {
         match event {
             ProgramEvent::Start => {
@@ -127,22 +127,22 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Exited {
         }
     }
 
-    fn enter(&mut self, program: &mut Program) {
-        program.num_restarts = 0u32;
-        program.reset_child_proc();
-        println!("{} exited", program.name);
+    fn enter(&mut self, program_ctx: &mut ProgramContext) {
+        program_ctx.num_restarts = 0u32;
+        program_ctx.reset();
+        println!("{} exited", program_ctx.name);
     }
 }
 
-impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Backoff {
+impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Backoff {
     fn update(
         &mut self,
         context: &mut dyn chay::fsm::Context<ProgramState>,
-        program: &mut Program,
+        program_ctx: &mut ProgramContext,
     ) {
         let now = std::time::Instant::now();
         if (now - self.enter_time.unwrap())
-            >= std::time::Duration::from_secs(program.config.backoff_delay() as u64)
+            >= std::time::Duration::from_secs(program_ctx.config.backoff_delay() as u64)
         {
             context.transition(ProgramState::Starting);
         }
@@ -152,12 +152,12 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Backoff {
         &mut self,
         event: &ProgramEvent,
         context: &mut dyn chay::fsm::Context<ProgramState>,
-        program: &mut Program,
+        program_ctx: &mut ProgramContext,
     ) -> chay::fsm::MachineResult {
         match event {
             ProgramEvent::Start => {
                 // Reset num_restarts since the client explicitly told us to start again.
-                program.num_restarts = 0u32;
+                program_ctx.num_restarts = 0u32;
                 context.transition(ProgramState::Starting);
                 chay::fsm::MachineResult::Ok(Some("Already starting (was backoff)".to_string()))
             }
@@ -167,34 +167,34 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Backoff {
             }
             ProgramEvent::Restart => {
                 // Reset num_restarts since the client explicitly told us to start again.
-                program.num_restarts = 0u32;
+                program_ctx.num_restarts = 0u32;
                 context.transition(ProgramState::Starting);
                 chay::fsm::MachineResult::Ok(Some("Wasn't running (was backoff)".to_string()))
             }
         }
     }
 
-    fn enter(&mut self, program: &mut Program) {
+    fn enter(&mut self, program_ctx: &mut ProgramContext) {
         println!(
             "{} backoff (delay: {})",
-            program.name,
-            program.config.backoff_delay()
+            program_ctx.name,
+            program_ctx.config.backoff_delay()
         );
-        program.num_restarts += 1u32;
+        program_ctx.num_restarts += 1u32;
         self.enter_time.replace(std::time::Instant::now());
     }
 }
 
-impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Starting {
+impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Starting {
     fn update(
         &mut self,
         context: &mut dyn chay::fsm::Context<ProgramState>,
-        program: &mut Program,
+        program_ctx: &mut ProgramContext,
     ) {
-        if program.is_running() {
+        if program_ctx.program.is_running() {
             context.transition(ProgramState::Running);
         } else {
-            transition_to_backoff_or_exited(context, program);
+            transition_to_backoff_or_exited(context, program_ctx);
         }
     }
 
@@ -202,12 +202,12 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Starting {
         &mut self,
         event: &ProgramEvent,
         context: &mut dyn chay::fsm::Context<ProgramState>,
-        program: &mut Program,
+        program_ctx: &mut ProgramContext,
     ) -> chay::fsm::MachineResult {
         match event {
             ProgramEvent::Start => {
                 // Reset num_restarts since the client explicitly told us to start again.
-                program.num_restarts = 0u32;
+                program_ctx.num_restarts = 0u32;
                 context.transition(ProgramState::Starting);
                 chay::fsm::MachineResult::Ok(Some("Already starting".to_string()))
             }
@@ -217,7 +217,7 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Starting {
             }
             ProgramEvent::Restart => {
                 // Reset num_restarts since the client explicitly told us to start again.
-                program.num_restarts = 0u32;
+                program_ctx.num_restarts = 0u32;
                 chay::fsm::MachineResult::Ok(Some(
                     "Already starting (resetting backoff counter)".to_string(),
                 ))
@@ -225,22 +225,22 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Starting {
         }
     }
 
-    fn enter(&mut self, program: &mut Program) {
-        println!("{} starting", program.name);
-        if let Err(error) = program.start() {
-            println!("{} spawn error: {error}", program.name);
+    fn enter(&mut self, program_ctx: &mut ProgramContext) {
+        println!("{} starting", program_ctx.name);
+        if let Err(error) = program_ctx.program.start() {
+            println!("{} spawn error: {error}", program_ctx.name);
         }
     }
 }
 
-impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Running {
+impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Running {
     fn update(
         &mut self,
         context: &mut dyn chay::fsm::Context<ProgramState>,
-        program: &mut Program,
+        program_ctx: &mut ProgramContext,
     ) {
-        if !program.is_running() {
-            transition_to_backoff_or_exited(context, program);
+        if !program_ctx.program.is_running() {
+            transition_to_backoff_or_exited(context, program_ctx);
         }
     }
 
@@ -248,50 +248,49 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Running {
         &mut self,
         event: &ProgramEvent,
         context: &mut dyn chay::fsm::Context<ProgramState>,
-        program: &mut Program,
+        program_ctx: &mut ProgramContext,
     ) -> chay::fsm::MachineResult {
         match event {
             ProgramEvent::Start => {
                 chay::fsm::MachineResult::Ok(Some("Already running".to_string()))
             }
             ProgramEvent::Stop => {
-                program.should_restart = false;
+                program_ctx.should_restart = false;
                 context.transition(ProgramState::Stopping);
                 chay::fsm::MachineResult::Ok(None)
             }
             ProgramEvent::Restart => {
-                program.should_restart = true;
+                program_ctx.should_restart = true;
                 chay::fsm::MachineResult::Ok(None)
             }
         }
     }
 
-    fn enter(&mut self, program: &mut Program) {
-        program.num_restarts = 0u32;
-        println!("{} running", program.name);
+    fn enter(&mut self, program_ctx: &mut ProgramContext) {
+        program_ctx.num_restarts = 0u32;
+        println!("{} running", program_ctx.name);
     }
 }
 
 impl Stopping {
     fn kill_program_and_stop(
-        program: &mut Program,
+        program_ctx: &mut ProgramContext,
         context: &mut dyn chay::fsm::Context<ProgramState>,
     ) {
-        println!("Sending SIGKILL to program {}", program.name());
-        match program.send_signal(Signal::SIGKILL) {
+        println!("Sending SIGKILL to program {}", program_ctx.name);
+        match program_ctx.program.send_signal(Signal::SIGKILL) {
             Ok(_) => {}
             Err(e) => {
                 println!(
                     "Could not send SIGKILL to program {}: {:?}",
-                    program.name(),
-                    e
+                    program_ctx.name, e
                 );
             }
         }
         // Always transition to Stopped, even if sending SIGKILL failed. Presumably that
         // would only happen if the program has already terminated somehow. I am not
         // sure if this is actually possible.
-        Stopping::transition_to_stopped_or_restart(program.should_restart, context);
+        Stopping::transition_to_stopped_or_restart(program_ctx.should_restart, context);
     }
 
     fn transition_to_stopped_or_restart(
@@ -306,14 +305,14 @@ impl Stopping {
     }
 }
 
-impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Stopping {
+impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Stopping {
     fn update(
         &mut self,
         context: &mut dyn chay::fsm::Context<ProgramState>,
-        program: &mut Program,
+        program_ctx: &mut ProgramContext,
     ) {
-        if !program.is_running() {
-            Stopping::transition_to_stopped_or_restart(program.should_restart, context);
+        if !program_ctx.program.is_running() {
+            Stopping::transition_to_stopped_or_restart(program_ctx.should_restart, context);
             return;
         }
         if let Some(sigterm_time) = self.sigterm_time {
@@ -321,22 +320,21 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Stopping {
             // doesn't shut down within a reasonable timeout.
             let now = std::time::Instant::now();
             let sigkill_timeout =
-                std::time::Duration::from_secs(program.config.sigkill_delay() as u64);
+                std::time::Duration::from_secs(program_ctx.config.sigkill_delay() as u64);
             if (now - sigterm_time) >= sigkill_timeout {
-                Stopping::kill_program_and_stop(program, context);
+                Stopping::kill_program_and_stop(program_ctx, context);
             }
         } else {
             // We haven't sent SIGTERM yet, so do that now.
             self.sigterm_time = Some(std::time::Instant::now());
-            match program.send_signal(Signal::SIGTERM) {
+            match program_ctx.program.send_signal(Signal::SIGTERM) {
                 Ok(_) => {}
                 Err(error) => {
                     println!(
                         "Could not send SIGTERM to program {}: {:?}",
-                        program.name(),
-                        error
+                        program_ctx.name, error
                     );
-                    Stopping::kill_program_and_stop(program, context);
+                    Stopping::kill_program_and_stop(program_ctx, context);
                 }
             }
         }
@@ -346,39 +344,40 @@ impl chay::fsm::State<ProgramState, Program, ProgramEvent> for Stopping {
         &mut self,
         event: &ProgramEvent,
         _context: &mut dyn chay::fsm::Context<ProgramState>,
-        program: &mut Program,
+        program_ctx: &mut ProgramContext,
     ) -> chay::fsm::MachineResult {
         match event {
             ProgramEvent::Start => {
                 chay::fsm::MachineResult::Err("Cannot start while stopping".to_string())
             }
             ProgramEvent::Stop => {
-                program.should_restart = false;
+                program_ctx.should_restart = false;
                 chay::fsm::MachineResult::Ok(Some("Already stopping".to_string()))
             }
             ProgramEvent::Restart => {
-                program.should_restart = true;
+                program_ctx.should_restart = true;
                 chay::fsm::MachineResult::Ok(Some("Will restart after stopping".to_string()))
             }
         }
     }
 
-    fn enter(&mut self, program: &mut Program) {
+    fn enter(&mut self, program_ctx: &mut ProgramContext) {
         self.sigterm_time = None;
-        program.num_restarts = 0u32;
-        println!("{} stopping", program.name);
+        program_ctx.num_restarts = 0u32;
+        println!("{} stopping", program_ctx.name);
     }
 
-    fn exit(&mut self, program: &mut Program) {
-        program.should_restart = false;
+    fn exit(&mut self, program_ctx: &mut ProgramContext) {
+        program_ctx.should_restart = false;
     }
 }
 
 fn transition_to_backoff_or_exited(
     context: &mut dyn chay::fsm::Context<ProgramState>,
-    program: &mut Program,
+    program_ctx: &mut ProgramContext,
 ) {
-    if program.config.autorestart() && program.num_restarts < program.config.num_restart_attempts()
+    if program_ctx.config.autorestart()
+        && program_ctx.num_restarts < program_ctx.config.num_restart_attempts()
     {
         context.transition(ProgramState::Backoff);
     } else {

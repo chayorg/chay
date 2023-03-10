@@ -54,8 +54,8 @@ pub struct Config {
 
 #[derive(Clone, Debug, Default)]
 pub struct RenderedProgramConfig {
-    program: ProgramConfig,
-    logger: LoggerConfig,
+    pub program: ProgramConfig,
+    pub logger: Option<LoggerConfig>,
 }
 
 impl RenderedProgramConfig {
@@ -100,7 +100,7 @@ impl RenderedProgramConfig {
         if let Some(logger_name) = &program_config.logger {
             if let Some(logger_config) = config.loggers.get(logger_name) {
                 rendered_config.logger =
-                    Self::render_logger(logger_config, program_name, &mut vars_renderer)?;
+                    Some(Self::render_logger(logger_config, program_name, &mut vars_renderer)?);
             } else {
                 return Err(format!("Logger not found: {logger_name}").into());
             }
