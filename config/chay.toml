@@ -13,7 +13,7 @@ command = "/bin/bash"
 args = ["-c", "echo 'bar'; sleep 2; exit 1;"]
 autostart = false
 
-[programs.print_baz]
+[programs.baz]
 command = "doesnotexist234"
 backoff_delay = 5  # seconds
 num_restart_attempts = 2
