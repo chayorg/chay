@@ -5,24 +5,28 @@ foo = "Hello foo"
 
 [programs.foo]
 command = "/bin/bash"
-args = ["-c", "while true; do echo '{{example.foo}}'; sleep 1; done"]
+args = ["-c", "while true; do echo \"$(date)\": '{{example.foo}}'; sleep 1; done"]
+autostart = false
 logger = "simple_logger"
 
 [programs.bar]
 command = "/bin/bash"
 args = ["-c", "echo 'bar'; sleep 2; exit 1;"]
-autostart = false
+autostart = true
+logger = "simple_logger"
 
 [programs.baz]
 command = "doesnotexist234"
 backoff_delay = 5  # seconds
 num_restart_attempts = 2
 autostart = false
+logger = "simple_logger"
 
 [loggers.simple_logger]
 command = "/usr/bin/split"
 args = [
   "--numeric-suffixes",
+  "--additional-suffix=.log",
   "--bytes=10M",
   "-",  # Read from stdin
   "{{example.log_dir}}/{{chayd.ctx.program}}",  # log file prefix
