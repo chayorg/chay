@@ -6,13 +6,13 @@ foo = "Hello foo"
 [programs.foo]
 command = "/bin/bash"
 args = ["-c", "while true; do echo \"$(date)\": '{{example.foo}}'; sleep 1; done"]
-autostart = false
+autostart = true
 logger = "simple_logger"
 
 [programs.bar]
 command = "/bin/bash"
 args = ["-c", "echo 'bar'; sleep 2; exit 1;"]
-autostart = true
+autostart = false
 logger = "simple_logger"
 
 [programs.baz]
