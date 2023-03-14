@@ -288,10 +288,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Running {
 }
 
 impl Stopping {
-    fn kill_program_and_stop(
-        program_ctx: &mut ProgramContext,
-        context: &mut dyn chay::fsm::Context<ProgramState>,
-    ) {
+    fn send_kill_signal_to_all_running_programs(program_ctx: &mut ProgramContext) {
         if let Some(logger) = &mut program_ctx.logger {
             if logger.is_running() {
                 println!("Sending SIGKILL to program {}", logger.name);
@@ -315,10 +312,29 @@ impl Stopping {
                 }
             }
         }
-        // Always transition to Stopped, even if sending SIGKILL failed. Presumably that
-        // would only happen if the program has already terminated somehow. I am not
-        // sure if this is actually possible.
-        Stopping::transition_to_stopped_or_restart(program_ctx.should_restart, context);
+    }
+
+    fn send_sigterm_signal_to_all_running_programs(program_ctx: &mut ProgramContext) {
+        if let Some(logger) = &mut program_ctx.logger {
+            match logger.send_signal(Signal::SIGTERM) {
+                Ok(_) => {}
+                Err(error) => {
+                    println!(
+                        "Could not send SIGTERM to program {}: {:?}",
+                        logger.name, error
+                    );
+                }
+            }
+        }
+        match program_ctx.program.send_signal(Signal::SIGTERM) {
+            Ok(_) => {}
+            Err(error) => {
+                println!(
+                    "Could not send SIGTERM to program {}: {:?}",
+                    program_ctx.name, error
+                );
+            }
+        }
     }
 
     fn transition_to_stopped_or_restart(
@@ -350,35 +366,16 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Stopping {
             let sigkill_timeout =
                 std::time::Duration::from_secs(program_ctx.config.sigkill_delay() as u64);
             if (now - sigterm_time) >= sigkill_timeout {
-                Stopping::kill_program_and_stop(program_ctx, context);
+                Stopping::send_kill_signal_to_all_running_programs(program_ctx);
             }
         } else {
             // We haven't sent SIGTERM yet, so do that now.
             self.sigterm_time = Some(std::time::Instant::now());
-            if let Some(logger) = &mut program_ctx.logger {
-                if logger.is_running() {
-                    match logger.send_signal(Signal::SIGTERM) {
-                        Ok(_) => {}
-                        Err(error) => {
-                            println!(
-                                "Could not send SIGTERM to program {}: {:?}",
-                                program_ctx.name, error
-                            );
-                        }
-                    }
-                }
-            }
-            if program_ctx.program.is_running() {
-                match program_ctx.program.send_signal(Signal::SIGTERM) {
-                    Ok(_) => {}
-                    Err(error) => {
-                        println!(
-                            "Could not send SIGTERM to program {}: {:?}",
-                            program_ctx.name, error
-                        );
-                    }
-                }
-            }
+            Stopping::send_sigterm_signal_to_all_running_programs(program_ctx);
+        }
+        // Check again if everything is stopped in case we just killed everything above.
+        if program_ctx.all_programs_are_stopped() {
+            Stopping::transition_to_stopped_or_restart(program_ctx.should_restart, context);
         }
     }
 

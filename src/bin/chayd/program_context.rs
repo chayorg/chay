@@ -50,7 +50,7 @@ impl ProgramContext {
     }
 
     pub fn all_programs_are_stopped(&mut self) -> bool {
-        if !self.program.is_running() {
+        if self.program.is_running() {
             return false;
         }
         if let Some(logger) = &mut self.logger {

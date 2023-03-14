@@ -57,6 +57,7 @@ impl Program {
     }
 
     pub fn reset_child_proc(&mut self) {
+        self.reap();
         self.child_proc = None;
     }
 
@@ -68,5 +69,30 @@ impl Program {
             };
         }
         false
+    }
+
+    pub fn reap(&mut self) {
+        if let Some(child_proc) = &mut self.child_proc {
+            match child_proc.try_wait() {
+                Ok(None) => {
+                    panic!("Reaped running program: {}", self.name);
+                }
+                Ok(Some(_)) | Err(_) => (),
+            };
+        }
+    }
+}
+
+impl Drop for Program {
+    fn drop(&mut self) {
+        // This is not ideal, but it will at least ensure tha tno matter what we always kill child
+        // processes when we exit in the case of a panic, etc.
+        if let Some(child_proc) = &mut self.child_proc {
+            println!("Force-killing child proc on drop: {}", self.name);
+            match child_proc.kill() {
+                Ok(_) => (),
+                Err(_) => (),
+            }
+        }
     }
 }
