@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
     let rendered_config = crate::config::render(&config).unwrap_or_else(|error| {
-        println!("Invalid config: {}", error);
+        println!("Invalid config: {}", error.source().unwrap());
         std::process::exit(1);
     });
 
