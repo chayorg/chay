@@ -1,6 +1,5 @@
 [vars.example]
-# TODO(kgreenek): Support environment variables to support e.g. $HOME.
-log_dir = "/tmp/chayd"
+log_dir = "{{env.HOME}}/.chayd/log"
 foo = "Hello foo"
 
 [programs.foo]
