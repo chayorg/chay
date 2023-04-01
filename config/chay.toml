@@ -22,6 +22,7 @@ autostart = false
 logger = "simple_logger"
 
 [loggers.simple_logger]
+pre_command = "/usr/bin/mkdir -p {{example.log_dir}}"
 command = "/usr/bin/split"
 args = [
   "--numeric-suffixes",

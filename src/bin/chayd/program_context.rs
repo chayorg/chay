@@ -6,12 +6,17 @@ pub struct ProgramContext {
     pub config: crate::config::RenderedProgramConfig,
     pub program: Program,
     pub logger: Option<Program>,
+    pub pre_command: Option<Program>,
     pub num_restarts: u32,
     pub should_restart: bool,
 }
 
 fn logger_name(program_name: &str) -> String {
     format!("{program_name}-logger")
+}
+
+fn pre_command_name(program_name: &str) -> String {
+    format!("{program_name}-pre-command")
 }
 
 impl ProgramContext {
@@ -26,11 +31,21 @@ impl ProgramContext {
         } else {
             None
         };
+        let pre_command_program = if let Some(pre_command) = &config.program.pre_command {
+            Some(Program::new(
+                pre_command_name(name),
+                pre_command.command.clone(),
+                pre_command.args.clone(),
+            ))
+        } else {
+            None
+        };
         Self {
             name: name.to_string(),
             config,
             program,
             logger: logger_program,
+            pre_command: pre_command_program,
             num_restarts: 0u32,
             should_restart: false,
         }

@@ -32,10 +32,17 @@ pub struct LoggerConfig {
 }
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct PreCommandConfig {
+    pub command: String,
+    pub args: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct ProgramConfig {
     pub command: String,
     pub args: Option<Vec<String>>,
     pub logger: Option<String>,
+    pub pre_command: Option<PreCommandConfig>,
     pub autostart: Option<bool>,
     pub autorestart: Option<bool>,
     /// Seconds to wait after a program exits unexpectedly before attempted to restart the program.
@@ -117,13 +124,18 @@ impl RenderedProgramConfig {
     ) -> Result<ProgramConfig, tera::Error> {
         let mut rendered_program_config = program_config.clone();
         rendered_program_config.command = vars_renderer.render_str(&program_config.command)?;
-        if let Some(args) = &program_config.args {
-            let mut rendered_args: Vec<String> = vec![];
+        if let Some(args) = &mut rendered_program_config.args {
             for arg in args {
-                let rendered_arg = vars_renderer.render_str(&arg)?;
-                rendered_args.push(rendered_arg);
+                *arg = vars_renderer.render_str(&arg)?;
             }
-            rendered_program_config.args = Some(rendered_args);
+        }
+        if let Some(pre_command) = &mut rendered_program_config.pre_command {
+            pre_command.command = vars_renderer.render_str(&pre_command.command)?;
+            if let Some(args) = &mut pre_command.args {
+                for arg in args {
+                    *arg = vars_renderer.render_str(&arg)?;
+                }
+            }
         }
         Ok(rendered_program_config)
     }
