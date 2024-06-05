@@ -13,6 +13,7 @@ enum ProgramState {
   PROGRAM_STATE_STARTING = 4;
   PROGRAM_STATE_RUNNING = 5;
   PROGRAM_STATE_STOPPING = 6;
+  PROGRAM_STATE_EXITING = 7;
 }
 
 message ProgramStatus {

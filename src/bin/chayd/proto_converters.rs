@@ -14,6 +14,7 @@ pub fn proto_from_program_state(
         program_fsm::ProgramState::Starting => chay_proto::ProgramState::Starting,
         program_fsm::ProgramState::Running => chay_proto::ProgramState::Running,
         program_fsm::ProgramState::Stopping => chay_proto::ProgramState::Stopping,
+        program_fsm::ProgramState::Exiting => chay_proto::ProgramState::Exiting,
     }
 }
 
