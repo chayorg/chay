@@ -7,7 +7,7 @@ foo = "Hello foo"
 command = "/bin/bash"
 args = [
   "-c",
-  "while true; do echo \"$(date)\": '{{example.foo}}'; sleep 1; done",
+  "while true; do echo \"$(date)\"; >&2 echo \"stderr\"; echo \"stdout\"; sleep 1; done",
 ]
 autostart = true
 logger = "simple_logger"

@@ -1,5 +1,6 @@
 use nix::sys::signal::Signal;
 use nix::unistd::Pid;
+use std::os::fd::{AsRawFd, FromRawFd};
 
 #[derive(Debug)]
 pub struct Program {
@@ -33,11 +34,14 @@ impl Program {
             command.stdin(std::process::Stdio::piped());
         }
         if let Some(parent_proc) = parent_proc {
-            // Note: This will panic if parent_proc's stdin was not piped.
+            // NOTE: This will panic if parent_proc's stdin was not piped.
             let parent_stdin = parent_proc.stdin.take().unwrap();
+            command.stderr(unsafe {
+                std::process::Stdio::from_raw_fd(
+                    nix::unistd::dup(parent_stdin.as_raw_fd()).unwrap(),
+                )
+            });
             command.stdout(parent_stdin);
-            // TODO(kgreenek): Figure out how to support redirecting stderr to stdout.
-            //command.stderr(parent_stdin);
         }
         match command.spawn() {
             Ok(child_proc) => {
