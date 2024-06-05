@@ -64,6 +64,8 @@ impl Program {
     pub fn is_running(&mut self) -> bool {
         if let Some(child_proc) = &mut self.child_proc {
             return match child_proc.try_wait() {
+                // If the ExitStatus is None, that means the exit status is not yet ready. This
+                // should only happen if the process is still running.
                 Ok(None) => true,
                 Ok(Some(_)) | Err(_) => false,
             };

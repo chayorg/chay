@@ -26,18 +26,23 @@ pub fn render(
 pub type VarsConfig = HashMap<String, HashMap<String, String>>;
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct LoggerConfig {
-    pub command: String,
-    pub args: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreCommandConfig {
     pub command: String,
     pub args: Option<Vec<String>>,
+    pub timeout: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoggerConfig {
+    pub command: String,
+    pub args: Option<Vec<String>>,
+    pub pre_command: Option<PreCommandConfig>,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProgramConfig {
     pub command: String,
     pub args: Option<Vec<String>>,
@@ -52,6 +57,7 @@ pub struct ProgramConfig {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub vars: VarsConfig,
     /// List of programs from the config file, sorted by key in alphabetical order.
@@ -158,6 +164,14 @@ impl RenderedProgramConfig {
                 rendered_args.push(rendered_arg);
             }
             rendered_logger_config.args = Some(rendered_args);
+        }
+        if let Some(pre_command) = &mut rendered_logger_config.pre_command {
+            pre_command.command = vars_renderer.render_str(&pre_command.command)?;
+            if let Some(args) = &mut pre_command.args {
+                for arg in args {
+                    *arg = vars_renderer.render_str(&arg)?;
+                }
+            }
         }
         Ok(rendered_logger_config)
     }

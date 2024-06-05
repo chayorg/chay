@@ -1,10 +1,14 @@
 [vars.example]
+# NOTE: Only strings are currently supported as vars.
 log_dir = "{{env.HOME}}/.chayd/log"
 foo = "Hello foo"
 
 [programs.foo]
 command = "/bin/bash"
-args = ["-c", "while true; do echo \"$(date)\": '{{example.foo}}'; sleep 1; done"]
+args = [
+  "-c",
+  "while true; do echo \"$(date)\": '{{example.foo}}'; sleep 1; done",
+]
 autostart = true
 logger = "simple_logger"
 
@@ -16,18 +20,21 @@ logger = "simple_logger"
 
 [programs.baz]
 command = "doesnotexist234"
-backoff_delay = 5  # seconds
+backoff_delay = 5           # seconds
 num_restart_attempts = 2
 autostart = false
 logger = "simple_logger"
 
 [loggers.simple_logger]
-pre_command = "/usr/bin/mkdir -p {{example.log_dir}}"
+pre_command = { command = "/usr/bin/mkdir", args = [
+  "-p",
+  "{{example.log_dir}}",
+] }
 command = "/usr/bin/split"
 args = [
   "--numeric-suffixes",
   "--additional-suffix=.log",
   "--bytes=10M",
-  "-",  # Read from stdin
-  "{{example.log_dir}}/{{chayd.ctx.program}}",  # log file prefix
+  "-",                                         # Read from stdin
+  "{{example.log_dir}}/{{chayd.ctx.program}}", # log file prefix
 ]
