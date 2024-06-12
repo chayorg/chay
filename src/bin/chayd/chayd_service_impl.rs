@@ -31,7 +31,7 @@ impl ProgramStatesChannels {
             match tx.send(program_states.clone()).await {
                 Ok(_) => {}
                 Err(_) => {
-                    println!("[Broadcast] SendError: to {}", socket)
+                    log::error!("[Broadcast] SendError: to {}", socket)
                 }
             }
         }
@@ -93,7 +93,7 @@ impl ChaydService for ChaydServiceImpl {
         &self,
         request: tonic::Request<ChaydServiceGetHealthRequest>,
     ) -> Result<tonic::Response<ChaydServiceGetHealthResponse>, tonic::Status> {
-        println!("Received GetHealth request: {:?}", request.get_ref());
+        log::info!("Received GetHealth request: {:?}", request.get_ref());
         let response = ChaydServiceGetHealthResponse {};
         Ok(tonic::Response::new(response))
     }
@@ -103,7 +103,7 @@ impl ChaydService for ChaydServiceImpl {
         request: tonic::Request<ChaydServiceGetStatusRequest>,
     ) -> tonic::Result<tonic::Response<Self::GetStatusStream>, tonic::Status> {
         let remote_addr = request.remote_addr().unwrap();
-        println!("GetStatus client connected from {:?}", &remote_addr);
+        log::info!("GetStatus client connected from {:?}", &remote_addr);
         let (stream_tx, stream_rx) = tokio::sync::mpsc::channel(1);
         let (program_states_tx, mut program_states_rx) = tokio::sync::mpsc::channel(1);
         {
@@ -144,7 +144,7 @@ impl ChaydService for ChaydServiceImpl {
                     .senders
                     .remove(&remote_addr);
             }
-            println!("GetStatus client disconnected from {:?}", &remote_addr);
+            log::info!("GetStatus client disconnected from {:?}", &remote_addr);
         });
 
         let response_stream = tokio_stream::wrappers::ReceiverStream::new(stream_rx);
@@ -157,7 +157,7 @@ impl ChaydService for ChaydServiceImpl {
         &self,
         request: tonic::Request<ChaydServiceStartRequest>,
     ) -> tonic::Result<tonic::Response<ChaydServiceStartResponse>, tonic::Status> {
-        println!("Received Start request {:?}", request.get_ref());
+        log::info!("Received Start request {:?}", request.get_ref());
         let (program_events_results_tx, mut program_events_results_rx) =
             tokio::sync::mpsc::channel(1);
         match self
@@ -195,7 +195,7 @@ impl ChaydService for ChaydServiceImpl {
         &self,
         request: tonic::Request<ChaydServiceStopRequest>,
     ) -> tonic::Result<tonic::Response<ChaydServiceStopResponse>, tonic::Status> {
-        println!("Received Stop request: {:?}", request.get_ref());
+        log::info!("Received Stop request: {:?}", request.get_ref());
         let (program_events_results_tx, mut program_events_results_rx) =
             tokio::sync::mpsc::channel(1);
         match self
@@ -231,7 +231,7 @@ impl ChaydService for ChaydServiceImpl {
         &self,
         request: tonic::Request<ChaydServiceRestartRequest>,
     ) -> tonic::Result<tonic::Response<ChaydServiceRestartResponse>, tonic::Status> {
-        println!("Received Restart request: {:?}", request.get_ref());
+        log::info!("Received Restart request: {:?}", request.get_ref());
         let (program_events_results_tx, mut program_events_results_rx) =
             tokio::sync::mpsc::channel(1);
         match self

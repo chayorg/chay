@@ -100,7 +100,7 @@ impl Drop for Program {
         // This is not ideal, but it will at least ensure tha tno matter what we always kill child
         // processes when we exit in the case of a panic, etc.
         if let Some(child_proc) = &mut self.child_proc {
-            println!("Force-killing child proc on drop: {}", self.name);
+            log::error!("Force-killing child proc on drop: {}", self.name);
             match child_proc.kill() {
                 Ok(_) => (),
                 Err(_) => (),

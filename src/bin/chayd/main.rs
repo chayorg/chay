@@ -37,13 +37,19 @@ fn update_program_fsms(program_fsms: &mut Vec<ProgramFsm>) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let log_config = simple_log::LogConfigBuilder::builder()
+        .level("info")
+        .output_console()
+        .build();
+    simple_log::new(log_config)?;
+
     let args = Args::parse();
     let config = crate::config::read_from_file(&args.config_path).unwrap_or_else(|error| {
-        println!("Error parsing toml file: {}", error);
+        log::error!("Error parsing toml file: {}", error);
         std::process::exit(1);
     });
     let rendered_config = crate::config::render(&config).unwrap_or_else(|error| {
-        println!("Invalid config: {}", error.source().unwrap());
+        log::error!("Invalid config: {}", error.source().unwrap());
         std::process::exit(1);
     });
 
@@ -91,13 +97,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match program_events_tx.send(Err(status)).await {
                         Ok(_) => {},
                         // The connection was probably closed by the client.
-                        Err(_) => println!("Warning: Could not send program events results"),
+                        Err(_) => log::warn!("Could not send program events results"),
                     }
                 } else {
                     match program_events_tx.send(Ok(result)).await {
                         Ok(_) => {},
                         // The connection was probably closed by the client.
-                        Err(_) => println!("Warning: Could not send program events results"),
+                        Err(_) => log::warn!("Could not send program events results"),
                     }
                 }
                 broadcast_program_states(&program_fsms, &program_states_channels).await;

@@ -83,7 +83,7 @@ fn send_signal_to_program_if_running(program: &mut Program, signal: Signal) {
         match program.send_signal(signal) {
             Ok(_) => {}
             Err(error) => {
-                println!(
+                log::error!(
                     "Could not send {} to program {}: {:?}",
                     signal_to_str(signal),
                     program.name,

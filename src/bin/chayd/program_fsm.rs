@@ -106,7 +106,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Stopped {
     fn enter(&mut self, program_ctx: &mut ProgramContext) {
         program_ctx.num_restarts = 0u32;
         program_ctx.reset();
-        println!("{} stopped", program_ctx.name);
+        log::info!("{} stopped", program_ctx.name);
     }
 }
 
@@ -135,7 +135,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Exited {
     fn enter(&mut self, program_ctx: &mut ProgramContext) {
         program_ctx.num_restarts = 0u32;
         program_ctx.reset();
-        println!("{} exited", program_ctx.name);
+        log::info!("{} exited", program_ctx.name);
     }
 }
 
@@ -203,7 +203,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Backoff {
     }
 
     fn enter(&mut self, program_ctx: &mut ProgramContext) {
-        println!(
+        log::info!(
             "{} backoff (delay: {} secs)",
             program_ctx.name,
             program_ctx.config.backoff_delay_secs()
@@ -232,7 +232,7 @@ impl Starting {
                     // The program is still running. Check if it has timed out.
                     if now - *start_time > pre_command.timeout {
                         // The program failed to run within the given timeout.
-                        println!("{} timed out", pre_command.program.name);
+                        log::info!("{} timed out", pre_command.program.name);
                         return crate::program_context::PrecommandStatus::ERROR;
                     }
                     // We are still waiting for pre_command to finish running.
@@ -241,15 +241,16 @@ impl Starting {
                 Ok(Some(exit_status)) => {
                     if !exit_status.success() {
                         if let Some(code) = exit_status.code() {
-                            println!(
+                            log::info!(
                                 "{} exited with non-zero code {}",
-                                pre_command.program.name, code
+                                pre_command.program.name,
+                                code
                             );
                         } else {
                             // I don't know if this can ever happen. The documentation says
                             // that on unix this can be None if the program was terminated by
                             // a signal, which shouldn't ever happen here to my knowledge.
-                            println!(
+                            log::info!(
                                 "{} exited with non-zero code [unknown]",
                                 pre_command.program.name
                             );
@@ -260,14 +261,17 @@ impl Starting {
                     return crate::program_context::PrecommandStatus::SUCCESS;
                 }
                 Err(error) => {
-                    println!("{} exited with error {error}", pre_command.program.name);
+                    log::error!(
+                        "{} error retrieving exit status: {error}",
+                        pre_command.program.name
+                    );
                     return crate::program_context::PrecommandStatus::ERROR;
                 }
             }
         }
         // Command has not been started yet.
         if let Err(error) = pre_command.program.start(false, None) {
-            println!("{} spawn error: {error}", pre_command.program.name);
+            log::info!("{} spawn error: {error}", pre_command.program.name);
             return crate::program_context::PrecommandStatus::ERROR;
         }
         pre_command.start_time = Some(now);
@@ -290,17 +294,20 @@ impl Starting {
             }
             Ok(Some(exit_status)) => {
                 if let Some(code) = exit_status.code() {
-                    println!("{} exited with code {}", subprogram.program.name, code);
+                    log::info!("{} exited with code {}", subprogram.program.name, code);
                 } else {
                     // I don't know if this can ever happen. The documentation says
                     // that on unix this can be None if the program was terminated by
                     // a signal, which shouldn't ever happen here to my knowledge.
-                    println!("{} exited with code [unknown]", subprogram.program.name);
+                    log::error!("{} exited with code [unknown]", subprogram.program.name);
                 }
                 return crate::program_context::SubprogramStatus::ERROR;
             }
             Err(error) => {
-                println!("{} exited with error {error}", subprogram.program.name);
+                log::error!(
+                    "{} error retrieving exit status: {error}",
+                    subprogram.program.name
+                );
                 return crate::program_context::SubprogramStatus::ERROR;
             }
         }
@@ -341,7 +348,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Starting {
             // Start the logger if it isn't already started.
             if logger.start_time.is_none() {
                 if let Err(error) = logger.program.start(true, None) {
-                    println!("{} spawn error: {error}", logger.program.name);
+                    log::info!("{} spawn error: {error}", logger.program.name);
                     transition_to_backoff_or_exiting(context, program_ctx);
                     return;
                 }
@@ -355,7 +362,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Starting {
                     false,
                     Some(&mut logger.program.child_proc.as_mut().unwrap()),
                 ) {
-                    println!("{} spawn error: {error}", program_ctx.name);
+                    log::info!("{} spawn error: {error}", program_ctx.name);
                     transition_to_backoff_or_exiting(context, program_ctx);
                     return;
                 }
@@ -365,7 +372,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Starting {
             // Start the program if it isn't already started.
             if program_ctx.program.start_time.is_none() {
                 if let Err(error) = program_ctx.program.program.start(false, None) {
-                    println!("{} spawn error: {error}", program_ctx.name);
+                    log::info!("{} spawn error: {error}", program_ctx.name);
                     transition_to_backoff_or_exiting(context, program_ctx);
                     return;
                 }
@@ -430,7 +437,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Starting {
     }
 
     fn enter(&mut self, program_ctx: &mut ProgramContext) {
-        println!("{} starting", program_ctx.name);
+        log::info!("{} starting", program_ctx.name);
     }
 }
 
@@ -470,7 +477,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Running {
 
     fn enter(&mut self, program_ctx: &mut ProgramContext) {
         program_ctx.num_restarts = 0u32;
-        println!("{} running", program_ctx.name);
+        log::info!("{} running", program_ctx.name);
     }
 }
 
@@ -515,7 +522,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Stopping {
     fn enter(&mut self, program_ctx: &mut ProgramContext) {
         program_ctx.sigterm_time = None;
         program_ctx.num_restarts = 0u32;
-        println!("{} stopping", program_ctx.name);
+        log::info!("{} stopping", program_ctx.name);
     }
 
     fn exit(&mut self, program_ctx: &mut ProgramContext) {
@@ -565,7 +572,7 @@ impl chay::fsm::State<ProgramState, ProgramContext, ProgramEvent> for Exiting {
     fn enter(&mut self, program_ctx: &mut ProgramContext) {
         program_ctx.sigterm_time = None;
         program_ctx.num_restarts = 0u32;
-        println!("{} exiting", program_ctx.name);
+        log::info!("{} exiting", program_ctx.name);
     }
 
     fn exit(&mut self, program_ctx: &mut ProgramContext) {
