@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .serve(chayd_addr),
     );
 
-    let mut fsm_update_interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+    let mut fsm_update_interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
     loop {
         tokio::select! {
             _ = fsm_update_interval.tick() => {

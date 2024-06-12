@@ -2,7 +2,7 @@ use nix::sys::signal::Signal;
 use nix::unistd::Pid;
 use std::os::fd::{AsRawFd, FromRawFd};
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct Program {
     pub name: String,
     pub command: String,
@@ -75,6 +75,12 @@ impl Program {
             };
         }
         false
+    }
+
+    // Returns the exit status without checking if the process been started.
+    // Panics if the process has not yet been started.
+    pub fn exit_status_unchecked(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child_proc.as_mut().unwrap().try_wait()
     }
 
     pub fn reap(&mut self) {

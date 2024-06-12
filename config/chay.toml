@@ -9,18 +9,18 @@ args = [
   "-c",
   "while true; do echo \"$(date)\"; >&2 echo \"stderr\"; echo \"stdout\"; sleep 1; done",
 ]
-autostart = true
 logger = "simple_logger"
 
 [programs.bar]
 command = "/bin/bash"
 args = ["-c", "echo 'bar'; sleep 2; exit 1;"]
+start_wait_secs = 5
 autostart = false
 logger = "simple_logger"
 
 [programs.baz]
 command = "doesnotexist234"
-backoff_delay = 5           # seconds
+backoff_delay_secs = 5
 num_restart_attempts = 2
 autostart = false
 logger = "simple_logger"

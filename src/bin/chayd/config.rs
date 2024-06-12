@@ -30,7 +30,9 @@ pub type VarsConfig = HashMap<String, HashMap<String, String>>;
 pub struct PreCommandConfig {
     pub command: String,
     pub args: Option<Vec<String>>,
-    pub timeout: Option<u32>,
+
+    #[serde(default = "default_pre_command_timeout_secs")]
+    pub timeout_secs: u32,
 }
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
@@ -39,6 +41,8 @@ pub struct LoggerConfig {
     pub command: String,
     pub args: Option<Vec<String>>,
     pub pre_command: Option<PreCommandConfig>,
+    #[serde(default = "default_start_wait_secs")]
+    pub start_wait_secs: u32,
 }
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
@@ -46,14 +50,25 @@ pub struct LoggerConfig {
 pub struct ProgramConfig {
     pub command: String,
     pub args: Option<Vec<String>>,
-    pub logger: Option<String>,
     pub pre_command: Option<PreCommandConfig>,
-    pub autostart: Option<bool>,
-    pub autorestart: Option<bool>,
+    #[serde(default = "default_start_wait_secs")]
+    pub start_wait_secs: u32,
+
+    pub logger: Option<String>,
+
+    #[serde(default = "default_autostart")]
+    pub autostart: bool,
+    #[serde(default = "default_autorestart")]
+    pub autorestart: bool,
     /// Seconds to wait after a program exits unexpectedly before attempted to restart the program.
-    pub backoff_delay: Option<u32>,
-    pub num_restart_attempts: Option<u32>,
-    pub sigkill_delay: Option<u32>,
+    #[serde(default = "default_backoff_delay_secs")]
+    pub backoff_delay_secs: u32,
+    #[serde(default = "default_num_restart_attempts")]
+    pub num_restart_attempts: u32,
+
+    /// Seconds to wait after a program exits unexpectedly before attempted to restart the program.
+    #[serde(default = "default_sigkill_delay_secs")]
+    pub sigkill_delay_secs: u32,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -72,32 +87,24 @@ pub struct RenderedProgramConfig {
 }
 
 impl RenderedProgramConfig {
-    pub fn command(&self) -> String {
-        self.program.command.clone()
-    }
-
-    pub fn args(&self) -> Option<Vec<String>> {
-        self.program.args.clone()
-    }
-
     pub fn autostart(&self) -> bool {
-        self.program.autostart.unwrap_or(true)
+        self.program.autostart
     }
 
     pub fn autorestart(&self) -> bool {
-        self.program.autorestart.unwrap_or(true)
+        self.program.autorestart
     }
 
-    pub fn backoff_delay(&self) -> u32 {
-        self.program.backoff_delay.unwrap_or(1u32)
+    pub fn backoff_delay_secs(&self) -> u32 {
+        self.program.backoff_delay_secs
     }
 
     pub fn num_restart_attempts(&self) -> u32 {
-        self.program.num_restart_attempts.unwrap_or(4u32)
+        self.program.num_restart_attempts
     }
 
-    pub fn sigkill_delay(&self) -> u32 {
-        self.program.sigkill_delay.unwrap_or(10u32)
+    pub fn sigkill_delay_secs(&self) -> u32 {
+        self.program.sigkill_delay_secs
     }
 }
 
@@ -238,5 +245,63 @@ impl VarsRenderer {
 
     pub fn render_str(&mut self, config_str: &str) -> tera::Result<String> {
         self.tera.render_str(&config_str, &self.tera_ctx)
+    }
+}
+
+fn default_pre_command_timeout_secs() -> u32 {
+    1u32
+}
+
+fn default_start_wait_secs() -> u32 {
+    1u32
+}
+
+fn default_autostart() -> bool {
+    true
+}
+
+fn default_autorestart() -> bool {
+    true
+}
+
+fn default_backoff_delay_secs() -> u32 {
+    1u32
+}
+
+fn default_num_restart_attempts() -> u32 {
+    4u32
+}
+
+fn default_sigkill_delay_secs() -> u32 {
+    10u32
+}
+
+impl AsRef<PreCommandConfig> for PreCommandConfig {
+    fn as_ref(&self) -> &PreCommandConfig {
+        &self
+    }
+}
+
+impl AsRef<LoggerConfig> for LoggerConfig {
+    fn as_ref(&self) -> &LoggerConfig {
+        &self
+    }
+}
+
+impl AsRef<ProgramConfig> for ProgramConfig {
+    fn as_ref(&self) -> &ProgramConfig {
+        &self
+    }
+}
+
+impl AsRef<Config> for Config {
+    fn as_ref(&self) -> &Config {
+        &self
+    }
+}
+
+impl AsRef<RenderedProgramConfig> for RenderedProgramConfig {
+    fn as_ref(&self) -> &RenderedProgramConfig {
+        &self
     }
 }
